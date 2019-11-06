@@ -35,16 +35,34 @@ Each worker process is designed to operate more or less independently from each 
 - Query Handling Thread - grabs a query from the query request queue. If from an external client, forwards this request to all other workers. If from another worker, sends a message with that worker's result for the queried value. After a timeout period, the query handling thread of the first worker process returns the majority vote value to the external client. It then updates its database with the majority value and the number of corroborating workers only if the number of corroborating workers is greater than the number of corroborating workers for the existing value stored in the worker's database. In this way, eventual consistency is obtained for an entry by majority vote whenever there is an external client query.
 - Consistency Thread - since the client query updates are possibly random, the consistency thread creates additional, interal queries working backwards in time to the other workers and uses these values to update its database entries in the same way. This makes eventual consistency much faster.
 
-Process flow diagram for one worker process shown below.
+The rough process flow diagram for one worker process shown below.
 ![](readme_ims/diagram1.jpg)
 
+Data is stored in JSON or similar files. To keep things simple, the tester script will evaluate the system on a single machine in multiple processes. The neural network detection will thus be carried out on GPU by one process, and cpu by other processes, creating an interesting disparity in processing speed.
+
 ### 3. External Libraries and Services Required
-text here
+Multiprocessing and multithreading modules will be used, as well as ZMQ middleware for message passing. Additionally, pytorch will be used for object detection neural network.
 
 ### 4. System Failure Modes and Anomaly Detectors
-text here
+The following failures are possible and will be tested by artificial introduction. The anomaly detection method is listed in parentheses:
+- Worker returns anomalous values (audit result flag sent to system monitor)
+- Worker becomes unresponsive or dies (heartbeat not receieved by monitor)
+- System becomes partitioned temporarily (i.e. some nodes are restarted, or some nodes are temporarily isolated from communication so that messages are lost) (query handling thread reports low number of corroborating nodes)
+- Audit ratio is too high and creates low throughput (audit queue length is high much of the time, latency is high)
+- Over time, all original processes are killed (i.e. will the data consistency strategy be sufficient to ensure data is not lost)
+- All workers fail at once 
+
+The following failures are not accounted for or are considered outside the scope of the system:
+- Monitor process fails or is itself anomalous
+- Image sender stops sending images
+- External clients stop querying system
 
 ### 5. Failure Mitigation Strategies
-text here
+- Worker returns anomalous values - system monitor will maintain a count of failed audits by a process. If a set number of audit failures are received, the process will be restarted.
+- Worker becomes unresponsive - after a set time without receiving a heartbeat from a worker, the system monitor will restart that worker process
+- System becomes partitioned temporarily - the system should be robust to partitioning
+- Audit ratio is too high - if latency and audit queue lengths become too high, audit ratio will be adjusted (conversely, it will slowly increase over time if latency remains low)
+- Over time, all original processes are killed - the database should be robust to this type of rolling failure, other than that images in the task list of the worker process when it was killed will not be processed. This is assumed to be an acceptable level of failure since data is assumed to be received in a realtime manner where long term storage of raw image data to mitigate such failures is too resource intensive.
+- All workers fail at once - this should likewise be handled gracefully other than that 
 
 
