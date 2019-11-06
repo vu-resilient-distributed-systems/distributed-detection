@@ -14,7 +14,7 @@ Process flow diagram for one worker process shown below.
 text here
 
 ### 4. System Failure Modes and Anomaly Detectors
-text here
+text herev
 
 ### 5. Failure Mitigation Strategies
 text here
