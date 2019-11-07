@@ -44,7 +44,7 @@ def publish_images(imlist,tpi,socket):
             pass
         
         prev_time = time.time()
-        socket.send_pyobj((topic, im_pickle))
+        socket.send_pyobj(im_pickle)
         i = i + 1
         print("Sent image {}".format(i))
     
@@ -60,7 +60,7 @@ if __name__ == '__main__':
     time_per_im =  args.time_per_image
     PATH = args.im_directory
     
-    port = 5200
+    port = 6200
     host = "127.0.0.1" # Host IP address
     
     context = zmq.Context()
