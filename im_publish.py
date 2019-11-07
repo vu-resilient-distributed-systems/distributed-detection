@@ -18,6 +18,7 @@ import PIL
 from PIL import Image
 import argparse
 import _pickle as pickle
+import numpy as np
 
 
 def publish_images(imlist,tpi,socket):
@@ -34,6 +35,7 @@ def publish_images(imlist,tpi,socket):
     while True:
         #im = open(imlist[i%len(imlist)],'rb')
         im = Image.open(imlist[i%len(imlist)])
+        im = np.random.rand(10,10)
         im_pickle = pickle.dumps(im)
 #        open_cv_image = np.array(pil_im) 
 #        # Convert RGB to BGR 
@@ -60,7 +62,7 @@ if __name__ == '__main__':
     time_per_im =  args.time_per_image
     PATH = args.im_directory
     
-    port = 6200
+    port = 5200
     host = "127.0.0.1" # Host IP address
     
     context = zmq.Context()
