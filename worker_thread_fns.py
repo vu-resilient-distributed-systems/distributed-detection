@@ -69,11 +69,13 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = True):
     context = zmq.Context()
     sock = context.socket(zmq.PUB)
     sock.bind("tcp://{}:{}".format(host, port))
+    time.sleep(10) # pause to allow subscribers to connect
     
     # sending loop
     while True:
         try:
-            (topic,payload) = p_message_queue.get(timeout = timeout)
+            message = p_message_queue.get(timeout = timeout)
+            payload = pickle.dumps(message)
             #sock.send_string(topic)
             sock.send_pyobj(payload)
             if VERBOSE: print("Sender thread sent message at {}".format(time.ctime(time.time())))
@@ -82,6 +84,7 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = True):
             break
     
     sock.close()
+    context.term()
     if VERBOSE: print ("Message sender thread closed socket.")
 
 def receive_messages(hosts,ports,out_queue, timeout = 20, VERBOSE = True):
@@ -89,7 +92,7 @@ def receive_messages(hosts,ports,out_queue, timeout = 20, VERBOSE = True):
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
     this function has to do is send the information. messages are of the form:
-        (topic, (pickled message payload))
+        (topic, (unpickled message payload))
     worker_addresses - list of tuples (host_address (string), host port (int))
     p_message_queue - shared queue amongst all worker threads
     """    
@@ -119,6 +122,7 @@ def receive_messages(hosts,ports,out_queue, timeout = 20, VERBOSE = True):
             pass
         
     sock.close()
+    context.term()
     if VERBOSE: print ("Message receiver thread closed socket.")
 
         
@@ -133,16 +137,16 @@ if __name__ == "__main__":
         p_queue = queue.Queue()
         out_queue = mp.Queue()
         for i in range(10):
-            payload = pickle.dumps(np.random.rand(10,10))
+            payload = np.random.rand(10,10)
             item = ("label", payload)
             p_queue.put(item)
         
-        t = threading.Thread(target = receive_messages, args = (["127.0.0.1"],[5201],out_queue))    
+        t = threading.Thread(target = receive_messages, args = (["127.0.0.1"],[5200],out_queue,))    
         t.start()
         
-        #t2 = threading.Thread(target = send_messages, args = ("127.0.0.1",5201,p_queue,))
-        #t2.start()
+        t2 = threading.Thread(target = send_messages, args = ("127.0.0.1",5200,p_queue,))
+        t2.start()
         
         t.join()
-        #t2.join()
+        t2.join()
     
