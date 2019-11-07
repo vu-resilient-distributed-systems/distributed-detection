@@ -137,12 +137,12 @@ if __name__ == "__main__":
             item = ("label", payload)
             p_queue.put(item)
         
-        t = threading.Thread(target = receive_messages, args = (["127.0.0.1"],[5201],out_queue))    
-        t.start()
+        #t = mp.Process(target = receive_messages, args = (["127.0.0.1"],[5201],out_queue))    
+        #t.start()
         
-        #t2 = threading.Thread(target = send_messages, args = ("127.0.0.1",5201,p_queue,))
-        #t2.start()
+        t2 = threading.Thread(target = send_messages, args = ("127.0.0.1",5201,p_queue,))
+        t2.start()
         
-        t.join()
-        #t2.join()
+        #t.join()
+        t2.join()
     
