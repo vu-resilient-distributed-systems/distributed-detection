@@ -21,7 +21,7 @@ import multiprocessing as mp
 import threading
 import numpy as np
 
-def receive_images(p_image_queue,host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True):
+def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True):
     """
     Creates a ZMQ socket and listens on specified port, receiving and writing to
     shared image queue the received images
@@ -44,10 +44,11 @@ def receive_images(p_image_queue,host = "127.0.0.1", port = 6200, timeout = 20, 
     while time.time() - prev_time < timeout:
         try:
             temp = sock.recv_pyobj(zmq.NOBLOCK)
-            im = pickle.loads(temp)
+            (name,im) = pickle.loads(temp)
             p_image_queue.put(im) 
+            p_new_im_id_queue.put(name)
             prev_time = time.time()
-            if VERBOSE: print("Image receiver thread received image at {}".format(time.ctime(prev_time)))
+            if VERBOSE: print("Image receiver thread received image {} at {}".format(name,time.ctime(prev_time)))
         except zmq.ZMQError:
             pass
         
@@ -125,15 +126,51 @@ def receive_messages(hosts,ports,out_queue, timeout = 20, VERBOSE = True):
     context.term()
     if VERBOSE: print ("Message receiver thread closed socket.")
 
-        
+def load_balance(p_new_image_id_queue,p_task_queue,p_average_time,p_lb_results,p_message_queue, timeout = 0.1):
+    """
+    Every time a new image is added to the new_image_id_queue, sends worker's 
+    current estimated wait time to all other workers, waits for timeout, and 
+    compares current estimated wait times to those of all workers received after
+    the message was sent. Adds image to task list if worker has min wait time
+    """
+   
+    while True:
+        try:
+            # grabs new image id from queue
+            im_id = p_new_image_id_queue.get(timeout = 0)
+            
+            # package a message (topic = "load balance", wait time)
+            wait_time = p_average_time * p_task_queue.qsize()
+            message = ("load balance", wait_time)
+            p_message_queue.append(message)
+            
+            start_time = time.time()
+            min_time = np.inf
+            # wait for timeout period 
+            while time.time() - timeout < start_time:
+                try: 
+                    (sent_time,other_wait_time) = p_lb_results.get(timeout = 0)
+                    if sent_time > start_time and other_wait_time < min_time:
+                        min_time = other_wait_time
+            
+                except queue.Empty: 
+                    pass
+                
+            if min_time > wait_time: # current worker has lowest wait time
+                p_task_queue.put(im_id)
+
+        except queue.Empty:
+            pass
+     
 # tester code
 if __name__ == "__main__":
     
-    if False: #test receive_images
+    if True: #test receive_images
         p_queue = queue.Queue()
-        receive_images(p_queue)
+        p_name_queue = queue.Queue()
+        receive_images(p_queue,p_name_queue)
     
-    if True: # test send and receive_images
+    if False: # test send and receive_images
         p_queue = queue.Queue()
         out_queue = mp.Queue()
         for i in range(10):
@@ -141,12 +178,14 @@ if __name__ == "__main__":
             item = ("label", payload)
             p_queue.put(item)
         
-        t = threading.Thread(target = receive_messages, args = (["127.0.0.1"],[5200],out_queue,))    
+        t = threading.Thread(target = receive_messages, args = (["127.0.0.1","127.0.0.1"],[5200,5201],out_queue,))    
         t.start()
         
         t2 = threading.Thread(target = send_messages, args = ("127.0.0.1",5200,p_queue,))
         t2.start()
         
+        
         t.join()
         t2.join()
+
     
