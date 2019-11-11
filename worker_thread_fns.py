@@ -16,6 +16,7 @@ import _pickle as pickle
 import multiprocessing as mp
 import threading
 import numpy as np
+p_average_time = 0 # this is necessary per global variable stuff
 
 def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True,num = 0):
     """
@@ -140,14 +141,15 @@ def heartbeat(p_message_queue,p_task_queue,interval = 0.5,timeout = 20, VERBOSE 
     Sends out as a heartbeat the average wait time at regular intervals
     p_average_time - shared variable for average time,
     """
-    #global p_average_time
-    
+    global p_average_time
+
     last_average_time = p_average_time
     prev_time = time.time()
     
     while prev_time + timeout > time.time():
         message = ("heartbeat",(time.time(),p_average_time* p_task_queue.qsize() ,num))
         p_message_queue.put(message)
+        if VERBOSE: print("Heartbeat thread {} added heartbeat to message queue.".format(num))
         
         # updates prev_time whenever p_average_time changes
         if p_average_time != last_average_time:
@@ -167,8 +169,7 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,
     compares current estimated wait times to those of all workers received after
     the message was sent. Adds image to task list if worker has min wait time
     """
-    #global p_average_time
-    
+    global p_average_time
     prev_time = time.time()
     all_received_times = []
     
@@ -203,13 +204,13 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,
                         min_time = other_wait_time
             
             #delete out of date items
-            all_received_times.reverse()
+            deletions.reverse()
             for i in deletions:
                 del all_received_times[i]
     
             # this worker has minimum time to process, so add to task queue
             if min_time > p_task_queue.qsize() * p_average_time:
-                p_task_queue.append(im_id)
+                p_task_queue.put(im_id)
                 if VERBOSE: print("Worker {} Added {} to task list.".format(num,im_id))
          
         # there are no items in new_image_id_queue
@@ -267,9 +268,11 @@ if __name__ == "__main__":
         t_im_recv = threading.Thread(target = receive_images, args = (p_image_queue,p_new_id_queue,))
         t_load_bal = threading.Thread(target = load_balance, 
                                       args = (p_new_id_queue,p_task_queue,
-                                              p_average_time,p_lb_results,p_message_queue,))
+                                              p_lb_results,p_message_queue,))
         t_send_messages = threading.Thread(target = send_messages, args = ("127.0.0.1",5200,p_message_queue,))
+        t_heartbeat = threading.Thread(target = heartbeat, args = (p_message_queue,p_task_queue,))
         
+        t_heartbeat.start()
         t_im_recv.start()
         t_load_bal.start()
         t_send_messages.start()
@@ -278,5 +281,6 @@ if __name__ == "__main__":
         t_im_recv.join()
         t_load_bal.join()
         t_send_messages.join()
+        t_heartbeat.join
         
 

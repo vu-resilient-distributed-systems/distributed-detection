@@ -26,6 +26,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
     p_message_queue = queue.Queue() # for storing messages to send
     p_task_queue = queue.Queue() # for storing tasks assigned to worker
     p_lb_results = queue.Queue() # for storing load balancing results
+    global p_average_time
     p_average_time = random.random() + 0.1*worker_num # for storing worker average proc time
     host = hosts[worker_num]
     port = ports[worker_num]
@@ -99,10 +100,10 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
 if __name__ == "__main__":
     hosts = []
     ports = []
-    
     num_workers = 2
     timeout = 20
     VERBOSE = True
+    p_average_time = 0
     
     for i in range(num_workers):
         hosts.append("127.0.0.1")
