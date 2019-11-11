@@ -17,7 +17,7 @@ import multiprocessing as mp
 import threading
 import numpy as np
 
-def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True):
+def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True,num = 0):
     """
     Creates a ZMQ socket and listens on specified port, receiving and writing to
     shared image queue the received images
@@ -44,16 +44,16 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
             p_image_queue.put(im) 
             p_new_im_id_queue.put(name)
             prev_time = time.time()
-            if VERBOSE: print("Image receiver thread received image {} at {}".format(name,time.ctime(prev_time)))
+            if VERBOSE: print("Image receiver thread {} received image {} at {}".format(num,name,time.ctime(prev_time)))
         except zmq.ZMQError:
             time.sleep(0.1)
             pass
         
     sock.close()
-    if VERBOSE: print ("Image receiver thread closed socket.")
+    if VERBOSE: print ("Image receiver thread {} closed socket.".format(num))
 
 
-def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = True):
+def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = True,num = 0):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
@@ -77,7 +77,7 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = True):
             payload = pickle.dumps(message)
             #sock.send_string(topic)
             sock.send_pyobj(payload)
-            if VERBOSE: print("Sender thread sent message at {}".format(time.ctime(time.time())))
+            if VERBOSE: print("Sender thread {} sent message at {}".format(num,time.ctime(time.time())))
             prev_time = time.time()
             
         except queue.Empty:
@@ -86,9 +86,9 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = True):
     
     sock.close()
     context.term()
-    if VERBOSE: print ("Message sender thread closed socket.")
+    if VERBOSE: print ("Message sender thread {} closed socket.".format(num))
 
-def receive_messages(hosts,ports,p_lb_queue, timeout = 20, VERBOSE = True):
+def receive_messages(hosts,ports,p_lb_queue, timeout = 20, VERBOSE = True,num = 0):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
@@ -114,13 +114,14 @@ def receive_messages(hosts,ports,p_lb_queue, timeout = 20, VERBOSE = True):
             #topic = sock.recv_string(zmq.NOBLOCK)
             payload = sock.recv_pyobj(zmq.NOBLOCK)
             prev_time = time.time()
-            if VERBOSE: print("Receiver thread received message at {}".format(time.ctime(prev_time)))
+            if VERBOSE: print("Receiver thread {} received message at {}".format(num,time.ctime(prev_time)))
             # parse topic and payload accordingly here
             (label,data) = pickle.loads(payload)
             
             # deal with different types of messages (different label field)
-            if label == "load balance":
-                p_lb_queue.put((prev_time,data))
+            if label == "heartbeat":
+                 # (time heartbeat generated, this workers wait time, worker_num)
+                p_lb_queue.put((data[0],data[1]))
             else:
                 pass
 
@@ -131,50 +132,92 @@ def receive_messages(hosts,ports,p_lb_queue, timeout = 20, VERBOSE = True):
         
     sock.close()
     context.term()
-    if VERBOSE: print ("Message receiver thread closed socket.")
+    if VERBOSE: print ("Message receiver thread {} closed socket.".format(num))
 
-def load_balance(p_new_image_id_queue,p_task_queue,p_average_time,p_lb_results,p_message_queue, timeout = 20, lb_timeout = 0.5, VERBOSE = True):
+
+def heartbeat(p_message_queue,p_task_queue,interval = 0.5,timeout = 20, VERBOSE = True, num = 0):
+    """
+    Sends out as a heartbeat the average wait time at regular intervals
+    p_average_time - shared variable for average time,
+    """
+    #global p_average_time
+    
+    last_average_time = p_average_time
+    prev_time = time.time()
+    
+    while prev_time + timeout > time.time():
+        message = ("heartbeat",(time.time(),p_average_time* p_task_queue.qsize() ,num))
+        p_message_queue.put(message)
+        
+        # updates prev_time whenever p_average_time changes
+        if p_average_time != last_average_time:
+            prev_time = time.time() 
+        
+        # a bit imprecise since the other operations in the loop do take some time
+        time.sleep(interval)
+    
+    if VERBOSE: print("Heartbeat thread {} exited.".format(num))
+    
+
+
+def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue, timeout = 20, lb_timeout = 2, VERBOSE = True,num = 0):
     """
     Every time a new image is added to the new_image_id_queue, sends worker's 
     current estimated wait time to all other workers, waits for timeout, and 
     compares current estimated wait times to those of all workers received after
     the message was sent. Adds image to task list if worker has min wait time
     """
-   
+    #global p_average_time
+    
     prev_time = time.time()
+    all_received_times = []
+    
     while time.time() - prev_time < timeout:
+        # if there is a new image id
         try:
-            # grabs new image id from queue
+            # grabs new image id from queue if there is one
             im_id = p_new_image_id_queue.get(timeout = 0)
+            time_received = time.time()
             
-            # package a message (topic = "load balance", wait time)
-            wait_time = p_average_time * p_task_queue.qsize()
-            message = ("load balance", wait_time)
-            p_message_queue.put(message)
-            
-            prev_time = time.time()
-            
-            start_time = time.time()
-            min_time = np.inf
-            # wait for timeout period 
-            while time.time() - lb_timeout < start_time:
+            # get all pending times in p_lb_results and append to all_received_times
+            while True:
                 try: 
-                    (sent_time,other_wait_time) = p_lb_results.get(timeout = 0)
-                    if sent_time > start_time and other_wait_time < min_time:
+                    message = p_lb_results.get(timeout = 0)
+                    all_received_times.append(message)
+                except queue.Empty:
+                    break
+            
+            # go through all_received times and remove all messages more than lb_timeout old
+            # also keep running track of min valid time
+            min_time = np.inf
+            deletions = []
+            for i in range(len(all_received_times)): 
+                # each item is of form (time_generated, wait time, worker_num)
+                (other_gen_time, other_wait_time) = all_received_times[i]
+                
+                # check if item is out of date
+                if other_gen_time + lb_timeout < time_received:
+                    deletions.append(i)
+                else:
+                    if other_wait_time < min_time:
                         min_time = other_wait_time
             
-                except queue.Empty: 
-                    pass
-                
-            if min_time > wait_time: # current worker has lowest wait time
-                p_task_queue.put(im_id)
-                print("Added {} to task list.".format(im_id))
-            
-            
+            #delete out of date items
+            all_received_times.reverse()
+            for i in deletions:
+                del all_received_times[i]
+    
+            # this worker has minimum time to process, so add to task queue
+            if min_time > p_task_queue.qsize() * p_average_time:
+                p_task_queue.append(im_id)
+                if VERBOSE: print("Worker {} Added {} to task list.".format(num,im_id))
+         
+        # there are no items in new_image_id_queue
         except queue.Empty:
             time.sleep(0.1)
             pass
-    if VERBOSE: print("Load balancer thread exited.")
+                
+    if VERBOSE: print("Load balancer thread {} exited.".format(num))
      
 # tester code
 if __name__ == "__main__":
