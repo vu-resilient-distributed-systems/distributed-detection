@@ -9,13 +9,9 @@ process
 
 import zmq
 import random
-import sys
 import time
-import os
-import PIL
 import queue
 from PIL import Image
-import argparse
 import _pickle as pickle
 import multiprocessing as mp
 import threading
@@ -50,6 +46,7 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
             prev_time = time.time()
             if VERBOSE: print("Image receiver thread received image {} at {}".format(name,time.ctime(prev_time)))
         except zmq.ZMQError:
+            time.sleep(0.1)
             pass
         
     sock.close()
@@ -84,13 +81,14 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = True):
             prev_time = time.time()
             
         except queue.Empty:
+            time.sleep(0.1)
             break
     
     sock.close()
     context.term()
     if VERBOSE: print ("Message sender thread closed socket.")
 
-def receive_messages(hosts,ports,out_queue, timeout = 20, VERBOSE = True):
+def receive_messages(hosts,ports,p_lb_queue, timeout = 20, VERBOSE = True):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
@@ -115,20 +113,27 @@ def receive_messages(hosts,ports,out_queue, timeout = 20, VERBOSE = True):
         try:
             #topic = sock.recv_string(zmq.NOBLOCK)
             payload = sock.recv_pyobj(zmq.NOBLOCK)
-            # parse topic and payload accordingly here
-            data = pickle.loads(payload)
-            out_queue.put(data)
             prev_time = time.time()
-            if VERBOSE: print("Receiver thread received image at {}".format(time.ctime(prev_time)))
+            if VERBOSE: print("Receiver thread received message at {}".format(time.ctime(prev_time)))
+            # parse topic and payload accordingly here
+            (label,data) = pickle.loads(payload)
+            
+            # deal with different types of messages (different label field)
+            if label == "load balance":
+                p_lb_queue.put((prev_time,data))
+            else:
+                pass
+
         
         except zmq.ZMQError:
+            time.sleep(0.1)
             pass
         
     sock.close()
     context.term()
     if VERBOSE: print ("Message receiver thread closed socket.")
 
-def load_balance(p_new_image_id_queue,p_task_queue,p_average_time,p_lb_results,p_message_queue, timeout = 20, lb_timeout = 0.1, VERBOSE = True):
+def load_balance(p_new_image_id_queue,p_task_queue,p_average_time,p_lb_results,p_message_queue, timeout = 20, lb_timeout = 0.5, VERBOSE = True):
     """
     Every time a new image is added to the new_image_id_queue, sends worker's 
     current estimated wait time to all other workers, waits for timeout, and 
@@ -167,6 +172,7 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_average_time,p_lb_results,p
             
             
         except queue.Empty:
+            time.sleep(0.1)
             pass
     if VERBOSE: print("Load balancer thread exited.")
      
@@ -213,7 +219,7 @@ if __name__ == "__main__":
         p_message_queue = queue.Queue()
         p_task_queue = queue.Queue()
         p_lb_results = queue.Queue()
-        p_average_time = 1
+        p_average_time = random.random()
         
         t_im_recv = threading.Thread(target = receive_images, args = (p_image_queue,p_new_id_queue,))
         t_load_bal = threading.Thread(target = load_balance, 
