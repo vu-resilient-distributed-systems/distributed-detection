@@ -77,12 +77,12 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = True,num = 
             payload = pickle.dumps(message)
             #sock.send_string(topic)
             sock.send_pyobj(payload)
-            if VERBOSE: print("{}: Sender thread sent message at {}".format(num,time.ctime(time.time())))
             prev_time = time.time()
+            if VERBOSE: print("{}: Sender thread sent message at {}".format(num,time.ctime(prev_time)))
+            
             
         except queue.Empty:
             time.sleep(0.1)
-            break
     
     sock.close()
     context.term()
@@ -197,7 +197,7 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,
                     all_received_times.append(message)
                 except queue.Empty:
                     break
-            
+
             # go through all_received times and remove all messages more than lb_timeout old
             # also keep running track of min valid time
             min_time = np.inf
@@ -223,7 +223,7 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,
             p_average_time.put(avg_time)
             
             # this worker has minimum time to process, so add to task queue
-            if min_time > p_task_queue.qsize() * avg_time:
+            if min_time >= p_task_queue.qsize() * avg_time:
                 p_task_queue.put(im_id)
                 if VERBOSE: print("{}: Worker added {} to task list.".format(num,im_id))
                 

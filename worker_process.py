@@ -28,7 +28,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
     p_lb_results = queue.Queue() # for storing load balancing results
     
     p_average_time = queue.Queue()
-    p_average_time.put(random.random() + 0.1*worker_num) # for storing worker average proc time
+    p_average_time.put(1+0.01*worker_num) # for storing worker average proc time
     
     host = hosts[worker_num]
     port = ports[worker_num]
@@ -44,7 +44,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
                                       "127.0.0.1",
                                       6200,
                                       timeout,
-                                      VERBOSE,
+                                      False,
                                       worker_num))
     
     # create message sender thread
@@ -62,7 +62,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
                                     ports,
                                     p_lb_results,
                                     timeout,
-                                    VERBOSE,
+                                    False,
                                     worker_num))
     
     # create load balancer thread
@@ -104,7 +104,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
 if __name__ == "__main__":
     hosts = []
     ports = []
-    num_workers = 2
+    num_workers = 3
     timeout = 20
     VERBOSE = True
     #p_average_time = 0
