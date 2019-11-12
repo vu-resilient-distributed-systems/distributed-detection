@@ -17,6 +17,8 @@ import multiprocessing as mp
 import threading
 import numpy as np
 
+from simple_yolo.yolo_detector import Darknet_Detector
+
 def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True,num = 0):
     """
     Creates a ZMQ socket and listens on specified port, receiving and writing to
@@ -235,7 +237,26 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,
             pass
                 
     if VERBOSE: print("{}: Load balancer thread exited.".format(num))
-     
+ 
+def work_function(p_image_queue,p_task_queue,p_audit_queue,timeout = 20, VERBOSE = True, num = 0):
+    """
+    -Repeatedly gets first image from task_queue. If in audit_queue or task_queue,
+    processes image. Otherwise, discards image and loads next.
+    -Processing an image consists of performing object detection on the image and
+    outputting the results (numpy array)
+    -If not audit, the results are written to a local data file, and processing speed, latency, and average processing speed are reported to monitor process
+    -If audit, full results are sent to monitor process
+    """    
+    
+    net2 = Darknet_Detector('simple_yolo/cfg/yolov3.cfg',
+                            'simple_yolo/yolov3.weights',
+                            'simple_yolo/data/coco.names',
+                            'simple_yolo/pallete')
+    
+    test_file = 'imgs/dog.jpg'
+    out, im = net2.detect(test_file)
+    cv2.destroyAllWindows()
+    
 # tester code
 if __name__ == "__main__":
     
@@ -265,7 +286,7 @@ if __name__ == "__main__":
         t2.join()
 
     # Test 3 - Test load balancer works in case when no messages are received
-    if True:
+    if False:
         """
         set up a test in which images are received and added to new image queue
         load_balancer should add messages to send queue and sender should send them
