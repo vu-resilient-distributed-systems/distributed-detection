@@ -13,7 +13,7 @@ import random
 from worker_thread_fns import receive_images,send_messages,receive_messages,load_balance,heartbeat
 
 
-def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
+def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = False):
     """
     Given a list of hosts and ports (one pair for each worker) and an id num,
     creates a series of threads and shared variables that carry out the work in
@@ -27,13 +27,16 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
     p_task_queue = queue.Queue() # for storing tasks assigned to worker
     p_lb_results = queue.Queue() # for storing load balancing results
     
+    # since shared variables across threads in multiple processes is a bit of a pain,
+    # a queue is used even though the value it stores is a float
     p_average_time = queue.Queue()
-    p_average_time.put(1+0.01*worker_num) # for storing worker average proc time
+    p_average_time.put(0.01*worker_num) # initialize with a bit of difference
     
+    # get sender port
     host = hosts[worker_num]
     port = ports[worker_num]
     
-    # get all other ports except own port
+    # get receiver ports
     hosts.remove(host)
     ports.remove(port)
     
@@ -44,7 +47,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
                                       "127.0.0.1",
                                       6200,
                                       timeout,
-                                      False,
+                                      VERBOSE, 
                                       worker_num))
     
     # create message sender thread
@@ -53,7 +56,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
                                      port,
                                      p_message_queue,
                                      timeout,
-                                     False,
+                                     VERBOSE,
                                      worker_num))
     
     # create message receiver thread
@@ -62,7 +65,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
                                     ports,
                                     p_lb_results,
                                     timeout,
-                                    False,
+                                    VERBOSE,
                                     worker_num))
     
     # create load balancer thread
@@ -74,7 +77,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
                                     p_average_time,
                                     timeout,
                                     1.1,
-                                    VERBOSE,
+                                    True, #verbose
                                     worker_num))
     
     t_heartbeat = threading.Thread(target = heartbeat, args =
@@ -83,7 +86,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
                                     p_task_queue,
                                     0.5,
                                     timeout,
-                                    False,
+                                    VERBOSE,
                                     worker_num))
     
     # start all threads
@@ -102,6 +105,8 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
     
 
 if __name__ == "__main__":
+    # tester code for the worker processes
+    
     hosts = []
     ports = []
     num_workers = 3

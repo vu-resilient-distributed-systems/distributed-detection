@@ -279,14 +279,15 @@ if __name__ == "__main__":
         p_message_queue = queue.Queue()
         p_task_queue = queue.Queue()
         p_lb_results = queue.Queue()
-        p_average_time = random.random()
+        p_average_time = queue.Queue()
+        p_average_time.put(1)
         
         t_im_recv = threading.Thread(target = receive_images, args = (p_image_queue,p_new_id_queue,))
         t_load_bal = threading.Thread(target = load_balance, 
                                       args = (p_new_id_queue,p_task_queue,
-                                              p_lb_results,p_message_queue,))
+                                              p_lb_results,p_message_queue,p_average_time))
         t_send_messages = threading.Thread(target = send_messages, args = ("127.0.0.1",5200,p_message_queue,))
-        t_heartbeat = threading.Thread(target = heartbeat, args = (p_message_queue,p_task_queue,))
+        t_heartbeat = threading.Thread(target = heartbeat, args = (p_average_time,p_message_queue,p_task_queue,))
         
         t_heartbeat.start()
         t_im_recv.start()
