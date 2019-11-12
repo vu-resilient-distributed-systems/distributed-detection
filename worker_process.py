@@ -26,8 +26,10 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
     p_message_queue = queue.Queue() # for storing messages to send
     p_task_queue = queue.Queue() # for storing tasks assigned to worker
     p_lb_results = queue.Queue() # for storing load balancing results
-    global p_average_time
-    p_average_time = random.random() + 0.1*worker_num # for storing worker average proc time
+    
+    p_average_time = queue.Queue()
+    p_average_time.put(random.random() + 0.1*worker_num) # for storing worker average proc time
+    
     host = hosts[worker_num]
     port = ports[worker_num]
     
@@ -51,7 +53,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
                                      port,
                                      p_message_queue,
                                      timeout,
-                                     VERBOSE,
+                                     False,
                                      worker_num))
     
     # create message receiver thread
@@ -69,17 +71,19 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = True):
                                     p_task_queue,
                                     p_lb_results,
                                     p_message_queue,
+                                    p_average_time,
                                     timeout,
-                                    0.1,
+                                    1.1,
                                     VERBOSE,
                                     worker_num))
     
     t_heartbeat = threading.Thread(target = heartbeat, args =
-                                   (p_message_queue,
+                                   (p_average_time,
+                                    p_message_queue,
                                     p_task_queue,
                                     0.5,
                                     timeout,
-                                    VERBOSE,
+                                    False,
                                     worker_num))
     
     # start all threads
@@ -103,7 +107,7 @@ if __name__ == "__main__":
     num_workers = 2
     timeout = 20
     VERBOSE = True
-    p_average_time = 0
+    #p_average_time = 0
     
     for i in range(num_workers):
         hosts.append("127.0.0.1")
