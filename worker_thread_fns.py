@@ -43,7 +43,7 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
         try:
             temp = sock.recv_pyobj(zmq.NOBLOCK)
             (name,im) = pickle.loads(temp)
-            p_image_queue.put(im) 
+            p_image_queue.put((name,(im,time.time()))) 
             p_new_im_id_queue.put(name)
             prev_time = time.time()
             if VERBOSE: print("{}: Image receiver thread received image {} at {}".format(num,name,time.ctime(prev_time)))
@@ -91,7 +91,7 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = True,num = 
     if VERBOSE: print ("{}: Message sender thread closed socket.".format(num))
 
 
-def receive_messages(hosts,ports,p_lb_queue, timeout = 20, VERBOSE = True,num = 0):
+def receive_messages(hosts,ports,p_lb_queue, p_audit_queue, timeout = 20, VERBOSE = True,worker_num = 0):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
@@ -117,7 +117,7 @@ def receive_messages(hosts,ports,p_lb_queue, timeout = 20, VERBOSE = True,num = 
             #topic = sock.recv_string(zmq.NOBLOCK)
             payload = sock.recv_pyobj(zmq.NOBLOCK)
             prev_time = time.time()
-            if VERBOSE: print("{}: Receiver thread received message at {}".format(num,time.ctime(prev_time)))
+            if VERBOSE: print("{}: Receiver thread received message at {}".format(worker_num,time.ctime(prev_time)))
             # parse topic and payload accordingly here
             (label,data) = pickle.loads(payload)
             
@@ -125,6 +125,13 @@ def receive_messages(hosts,ports,p_lb_queue, timeout = 20, VERBOSE = True,num = 
             if label == "heartbeat":
                  # (time heartbeat generated, this workers wait time, worker_num)
                 p_lb_queue.put((data[0],data[1]))
+            
+            # deal with audit requests
+            elif label == "audit_request":
+                # send audit_requests to two other 
+                (im_id,auditors) = data
+                if worker_num in auditors:
+                    p_audit_queue.put(im_id)
             else:
                 pass
 
@@ -135,7 +142,7 @@ def receive_messages(hosts,ports,p_lb_queue, timeout = 20, VERBOSE = True,num = 
         
     sock.close()
     context.term()
-    if VERBOSE: print ("{}: Message receiver thread closed socket.".format(num))
+    if VERBOSE: print ("{}: Message receiver thread closed socket.".format(worker_num))
 
 
 def heartbeat(p_average_time,p_message_queue,p_task_queue,interval = 0.5,timeout = 20, VERBOSE = True, num = 0):
@@ -238,24 +245,115 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,
                 
     if VERBOSE: print("{}: Load balancer thread exited.".format(num))
  
-def work_function(p_image_queue,p_task_queue,p_audit_queue,timeout = 20, VERBOSE = True, num = 0):
+def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,p_audit_rate,
+                  timeout = 20, VERBOSE = True, worker_num = 0,num_workers = 1):
     """
-    -Repeatedly gets first image from task_queue. If in audit_queue or task_queue,
+    -Repeatedly gets first image from image_queue. If in audit_queue or task_queue,
     processes image. Otherwise, discards image and loads next.
     -Processing an image consists of performing object detection on the image and
     outputting the results (numpy array)
     -If not audit, the results are written to a local data file, and processing speed, latency, and average processing speed are reported to monitor process
     -If audit, full results are sent to monitor process
-    """    
+    """ 
     
-    net2 = Darknet_Detector('simple_yolo/cfg/yolov3.cfg',
-                            'simple_yolo/yolov3.weights',
-                            'simple_yolo/data/coco.names',
-                            'simple_yolo/pallete')
+    # create network for doing work
+    model = Darknet_Detector('simple_yolo/cfg/yolov3.cfg',
+                                'simple_yolo/yolov3.weights',
+                                'simple_yolo/data/coco.names',
+                                'simple_yolo/pallete')
+    audit_list = [] # will store all im_ids taken from p_audit_queue
+    task_list = [] # will store all im_ids taken from p_task_queue
     
-    test_file = 'imgs/dog.jpg'
-    out, im = net2.detect(test_file)
-    cv2.destroyAllWindows()
+    prev_time = time.time()
+    while time.time() - prev_time < timeout:
+        try:
+            # get image off of image_queue
+            (im_id,image,im_time_received) = p_image_queue.get(timeout = 0)
+            prev_time = time.time()
+            
+            # update audit_list and task_list
+            while True:
+                try: 
+                    audit_id = p_audit_queue.get(timeout = 0)
+                    audit_list.append(audit_id)
+                except queue.Empty:
+                    break
+            while True:
+                try: 
+                    task_id = p_task_queue.get(timeout = 0)
+                    task_list.append(task_id)
+                except queue.Empty:
+                    break
+            
+            # check if audit task, normal task, or neither
+            AUDIT = False
+            TASK = False
+            if im_id in task_list:
+                TASK = True
+            if im_id in audit_list:
+                AUDIT = True
+                
+            if AUDIT or TASK:  
+                # do work
+                work_start_time = time.time()
+                result, _ = model.detect(image)
+                work_end_time = time.time()
+                
+                # if audit, write results to monitor process
+                if AUDIT:
+                    # package message
+                    message = ("audit_result",im_id,worker_num,result)
+                    p_message_queue.put(message)
+                # if task, write results to database and report metrics to monitor process
+                if TASK:
+                    # write results to database
+                    #TODO!!!
+                    
+                    # compute metrics
+                    latency = work_end_time - im_time_received
+                    proc_time = work_end_time - work_start_time
+                    
+                    # update average time with weighting of current speed at 0.2
+                    avg_time = p_average_time.get()
+                    avg_time = avg_time*0.8 + 0.2* avg_time
+                    p_average_time.put(avg_time)
+                    
+                    # send latency, processing time and average processing time to monitor
+                    message = ("metrics", worker_num, proc_time,avg_time,latency)
+                    p_message_queue.put(message)
+                    
+                    
+                    # if this task is not itself an audit, randomly audit 
+                    #with p_audit_rate probability
+                    audit_rate = p_audit_rate.get()
+                    p_audit_rate.put(audit_rate)
+                    
+                    if not AUDIT and random.rand() < audit_rate:
+                        # send result to monitor process
+                        message = ("audit_result",im_id,worker_num,result)
+                        p_message_queue.put(message)
+                        
+                        # get all worker nums besides this worker's
+                        worker_nums = [i for i in range(num_workers)]
+                        worker_nums.remove(worker_num)
+                        random.shuffle(worker_nums)
+                        
+                        # get up to two auditors if there are that many other workers
+                        auditors = []
+                        if len(worker_nums)>0:
+                            auditors.append(worker_nums[0])
+                            if len(worker_nums) > 1:
+                                auditors.append(worker_nums[1])
+                                
+                        # send audit request message
+                        message = ("audit_request", (im_id,auditors))
+                        p_message_queue.put(message)
+            
+        # no images in p_image_queue    
+        except queue.Empty:
+            time.sleep(0.1)
+        
+
     
 # tester code
 if __name__ == "__main__":

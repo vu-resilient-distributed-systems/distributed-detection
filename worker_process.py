@@ -30,7 +30,7 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = False):
     # since shared variables across threads in multiple processes is a bit of a pain,
     # a queue is used even though the value it stores is a float
     p_average_time = queue.Queue()
-    p_average_time.put(0.01*worker_num) # initialize with a bit of difference
+    p_average_time.put(1+0.01*worker_num) # initialize with a bit of difference
     
     # get sender port
     host = hosts[worker_num]
@@ -111,7 +111,7 @@ if __name__ == "__main__":
     ports = []
     num_workers = 3
     timeout = 20
-    VERBOSE = True
+    VERBOSE = False
     #p_average_time = 0
     
     for i in range(num_workers):
