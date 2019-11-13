@@ -43,7 +43,7 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
         try:
             temp = sock.recv_pyobj(zmq.NOBLOCK)
             (name,im) = pickle.loads(temp)
-            p_image_queue.put((name,(im,time.time()))) 
+            p_image_queue.put((name,im,time.time())) 
             p_new_im_id_queue.put(name)
             prev_time = time.time()
             if VERBOSE: print("{}: Image receiver thread received image {} at {}".format(num,name,time.ctime(prev_time)))
@@ -246,7 +246,7 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,
     if VERBOSE: print("{}: Load balancer thread exited.".format(num))
  
 def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,p_audit_rate,
-                  timeout = 20, VERBOSE = True, worker_num = 0,num_workers = 1):
+                  p_average_time,timeout = 20, VERBOSE = True, worker_num = 0,num_workers = 1):
     """
     -Repeatedly gets first image from image_queue. If in audit_queue or task_queue,
     processes image. Otherwise, discards image and loads next.
@@ -270,18 +270,21 @@ def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,p_aud
             # get image off of image_queue
             (im_id,image,im_time_received) = p_image_queue.get(timeout = 0)
             prev_time = time.time()
+            print("Got image from image_queue")
             
             # update audit_list and task_list
             while True:
                 try: 
                     audit_id = p_audit_queue.get(timeout = 0)
                     audit_list.append(audit_id)
+                    print("Added audit to audit list")
                 except queue.Empty:
                     break
             while True:
                 try: 
                     task_id = p_task_queue.get(timeout = 0)
                     task_list.append(task_id)
+                    print("Added task to task list")
                 except queue.Empty:
                     break
             
@@ -304,6 +307,7 @@ def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,p_aud
                     # package message
                     message = ("audit_result",im_id,worker_num,result)
                     p_message_queue.put(message)
+                    print("Audit results sent to message sender")
                 # if task, write results to database and report metrics to monitor process
                 if TASK:
                     # write results to database
@@ -321,14 +325,14 @@ def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,p_aud
                     # send latency, processing time and average processing time to monitor
                     message = ("metrics", worker_num, proc_time,avg_time,latency)
                     p_message_queue.put(message)
-                    
+                    print("Metrics sent to message sender")
                     
                     # if this task is not itself an audit, randomly audit 
                     #with p_audit_rate probability
                     audit_rate = p_audit_rate.get()
                     p_audit_rate.put(audit_rate)
                     
-                    if not AUDIT and random.rand() < audit_rate:
+                    if not AUDIT and random.random() < audit_rate:
                         # send result to monitor process
                         message = ("audit_result",im_id,worker_num,result)
                         p_message_queue.put(message)
@@ -348,7 +352,8 @@ def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,p_aud
                         # send audit request message
                         message = ("audit_request", (im_id,auditors))
                         p_message_queue.put(message)
-            
+                        print("Audit request sent")
+                        
         # no images in p_image_queue    
         except queue.Empty:
             time.sleep(0.1)
@@ -419,4 +424,48 @@ if __name__ == "__main__":
         t_send_messages.join()
         t_heartbeat.join
         
-
+    # Test 4 - Test wrk_function
+    if True:
+        """
+        set up a test in which images are received and added to new image queue
+        load_balancer should add messages to send queue and sender should send them
+        load_balancer should time out without receiving any responses,
+        and thus add the image id to its task list
+        """
+        
+        # define shared variables
+        p_image_queue = queue.Queue()
+        p_new_id_queue = queue.Queue()
+        p_message_queue = queue.Queue()
+        p_task_queue = queue.Queue()
+        p_lb_results = queue.Queue()
+        p_audit_queue = queue.Queue()
+        
+        p_average_time = queue.Queue()
+        p_average_time.put(1)
+        
+        p_audit_rate = queue.Queue()
+        p_audit_rate.put(0.1)
+        
+        t_im_recv = threading.Thread(target = receive_images, args = (p_image_queue,p_new_id_queue,))
+        t_load_bal = threading.Thread(target = load_balance, 
+                                      args = (p_new_id_queue,p_task_queue,
+                                              p_lb_results,p_message_queue,p_average_time))
+        t_send_messages = threading.Thread(target = send_messages, args = ("127.0.0.1",5200,p_message_queue,))
+        t_heartbeat = threading.Thread(target = heartbeat, args = (p_average_time,p_message_queue,p_task_queue,))
+        t_work = threading.Thread(target = work_function, 
+                                  args = (p_image_queue,p_task_queue,p_audit_queue,p_message_queue,p_audit_rate,p_average_time,
+                                          20, True, 0,2))
+        
+        
+        t_heartbeat.start()
+        t_im_recv.start()
+        t_load_bal.start()
+        t_send_messages.start()
+        t_work.start()
+        
+        t_im_recv.join()
+        t_load_bal.join()
+        t_send_messages.join()
+        t_heartbeat.join()
+        t_work.join()

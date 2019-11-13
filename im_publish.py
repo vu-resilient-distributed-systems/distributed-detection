@@ -15,6 +15,7 @@ import sys
 import time
 import os
 import PIL
+import cv2
 from PIL import Image
 import argparse
 import _pickle as pickle
@@ -34,9 +35,14 @@ def publish_images(imlist,tpi,socket):
     
     while True:
         #im = open(imlist[i%len(imlist)],'rb')
-        im = Image.open(imlist[i%len(imlist)])
+        im = Image.open(imlist[i%len(imlist)]).convert('RGB')
+        # convert to cv_im
+        cv_im = np.array(im)
+        cv_im = cv_im[:,:,::-1].copy()
+        
+
 #        im = np.random.rand(10,10)
-        message = (i,im)
+        message = (i,cv_im)
         im_pickle = pickle.dumps(message)
 #        open_cv_image = np.array(pil_im) 
 #        # Convert RGB to BGR 

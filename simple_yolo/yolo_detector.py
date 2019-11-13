@@ -99,7 +99,7 @@ class Darknet_Detector():
         
     
     
-    def detect(self,image, show = True,verbose = True,save_file = None):
+    def detect(self,image, show = False,verbose = False,save_file = None):
         start = time.time()
 #        
         try: # image is already loaded
