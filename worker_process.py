@@ -132,8 +132,8 @@ if __name__ == "__main__":
     
     hosts = []
     ports = []
-    num_workers = 2
-    timeout = 20
+    num_workers = 4
+    timeout = 60
     VERBOSE = False
     audit_rate = mp.Value('f',0.1,lock = True)
     

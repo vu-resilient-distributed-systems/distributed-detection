@@ -261,7 +261,7 @@ def load_balance(p_new_image_id_queue,
             # this worker has minimum time to process, so add to task queue
             if min_time >= cur_wait:
                 p_task_buffer.put(im_id)
-                if VERBOSE: print("w{}: Load balancer added {} to task list. Est wait: {}s".format(worker_num,im_id,cur_wait))
+                if VERBOSE: print("w{}: Load balancer added {} to task list. Est wait: {:.2f}s".format(worker_num,im_id,cur_wait))
 
                 # randomly audit with audit_rate probability
                 with audit_rate.get_lock():
@@ -380,10 +380,11 @@ def work_function(p_image_queue,
                 
                 ############## DO WORK ############## 
                 work_start_time = time.time()
-                result, _ = model.detect(image)
+#                result, _ = model.detect(image)
                 
-                #result = np.zeros([10,10])
-                #time.sleep(5)
+                # dummy work
+                result = np.zeros([10,10])
+                time.sleep(9)
                 
                 work_end_time = time.time()
                 prev_time = time.time()
