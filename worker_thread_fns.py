@@ -162,7 +162,7 @@ def heartbeat(p_average_time,p_message_queue,p_num_tasks,interval = 0.5,timeout 
     last_wait = avg_time* (num_tasks+1)
     prev_time = time.time()
     
-    while prev_time + timeout > time.time():
+    while prev_time + 2*timeout > time.time():
         # get average time
         with p_average_time.get_lock():
             avg_time = p_average_time.value
@@ -256,12 +256,12 @@ def load_balance(p_new_image_id_queue,
                 num_tasks = p_num_tasks.value
             cur_wait = avg_time* (num_tasks + 1)
             
-            print("Cur_wait time: {} Min time: {}".format(cur_wait,min_time))
+            #print("Cur_wait time: {} Min time: {}".format(cur_wait,min_time))
             
             # this worker has minimum time to process, so add to task queue
             if min_time >= cur_wait:
                 p_task_buffer.put(im_id)
-                if VERBOSE: print("w{}: Load balancer added {} to task list.".format(worker_num,im_id))
+                if VERBOSE: print("w{}: Load balancer added {} to task list. Est wait: {}s".format(worker_num,im_id,cur_wait))
 
                 # randomly audit with audit_rate probability
                 with audit_rate.get_lock():
@@ -393,7 +393,7 @@ def work_function(p_image_queue,
                     # package message
                     message = ("audit_result",(worker_num,im_id,result))
                     p_message_queue.put(message)
-                    if VERBOSE: print("w{}: work audit results on image {} semtr to message queue".format(worker_num, im_id))
+                    if VERBOSE: print("w{}: work audit results on image {} sent to message queue".format(worker_num, im_id))
                 # if task, write results to database and report metrics to monitor process
                 if TASK:
                     # write results to database

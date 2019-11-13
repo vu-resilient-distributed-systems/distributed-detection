@@ -51,7 +51,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                       "127.0.0.1",
                                       6200,
                                       timeout,
-                                      True, 
+                                      VERBOSE, 
                                       worker_num))
     
     # create message sender thread
@@ -93,7 +93,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                    (p_average_time,
                                     p_message_queue,
                                     p_num_tasks,
-                                    0.5,
+                                    0.05,
                                     timeout,
                                     VERBOSE,
                                     worker_num))
