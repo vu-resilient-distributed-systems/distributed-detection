@@ -11,11 +11,11 @@ import zmq
 import random
 import time
 import queue
-from PIL import Image
 import _pickle as pickle
 import multiprocessing as mp
 import threading
 import numpy as np
+import os
 
 from simple_yolo.yolo_detector import Darknet_Detector
 
@@ -398,7 +398,8 @@ def work_function(p_image_queue,
                 # if task, write results to database and report metrics to monitor process
                 if TASK:
                     # write results to database
-                    #TODO!!!
+                    data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
+                    write_data_csv(data_file,result,im_id)
                     
                     # compute metrics
                     latency = work_end_time - im_time_received
@@ -425,7 +426,18 @@ def work_function(p_image_queue,
     print("w{}: Work thread exited. {} images processed".format(worker_num,count))
 
     
-    
+def write_data_csv(file,data,im_id):
+    """
+    Writes data in csv for, appending to file and labeling each row with im_id
+    """
+    with open(file, mode = 'a') as f:
+        for row in data:
+            f.write(str(im_id))
+            for val in row:
+                f.write(" , ")
+                f.write(str(val))
+            f.write("\n") 
+     
     
     
     
