@@ -25,15 +25,14 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     p_image_queue = queue.Queue() # for storing received images
     p_new_id_queue = queue.Queue() # for storing received image names
     p_message_queue = queue.Queue() # for storing messages to send
-    p_task_queue = queue.Queue() # for storing tasks assigned to worker
+    p_task_buffer = queue.Queue() # for storing tasks assigned to worker
     p_lb_results = queue.Queue() # for storing load balancing results
-    p_audit_queue = queue.Queue() # for storing audit requests
+    p_audit_buffer = queue.Queue() # for storing audit requests
     
     # since shared variables across threads in multiple processes is a bit of a pain,
     # a queue is used even though the value it stores is a float
-    p_average_time = queue.Queue()
-    p_average_time.put(1+0.01*worker_num) # initialize with a bit of difference
-    
+    p_average_time = mp.Value('f',1+0.01*worker_num, lock = True)
+    p_num_tasks = mp.Value('i',0,lock = True)
     
     
     # get sender port
@@ -68,6 +67,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                     (hosts,
                                     ports,
                                     p_lb_results,
+                                    p_audit_buffer,
                                     timeout,
                                     VERBOSE,
                                     worker_num))
@@ -75,19 +75,20 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     # create load balancer thread
     t_load_bal = threading.Thread(target = load_balance, args = 
                                     (p_new_id_queue,
-                                    p_task_queue,
+                                    p_task_buffer,
                                     p_lb_results,
                                     p_message_queue,
                                     p_average_time,
+                                    p_num_tasks,
                                     timeout,
-                                    1.1,
+                                    15,
                                     True, #verbose
                                     worker_num))
     
     t_heartbeat = threading.Thread(target = heartbeat, args =
                                    (p_average_time,
                                     p_message_queue,
-                                    p_task_queue,
+                                    p_num_tasks,
                                     0.5,
                                     timeout,
                                     VERBOSE,
@@ -95,8 +96,8 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     
     t_work = threading.Thread(target = work_function, args = 
                               (p_image_queue,
-                               p_task_queue,
-                               p_audit_queue,
+                               p_task_buffer,
+                               p_audit_buffer,
                                p_message_queue,
                                audit_rate, # shared across all processes
                                p_average_time,
@@ -112,21 +113,22 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     t_mes_send.start()
     t_load_bal.start() 
     t_heartbeat.start()
+    t_work.start()
     
     # wait for all threads to terminate
     thread_im_rec.join()
     t_mes_recv.join()
-    t_mes_send.join()
     t_load_bal.join()  
+    t_work.join()
+    t_mes_send.join()
     t_heartbeat.join()
-    
 
 if __name__ == "__main__":
     # tester code for the worker processes
     
     hosts = []
     ports = []
-    num_workers = 3
+    num_workers = 2
     timeout = 20
     VERBOSE = False
     audit_rate = mp.Value('f',0.1,lock = True)

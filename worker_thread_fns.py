@@ -35,7 +35,7 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
     sock.connect("tcp://{}:{}".format(host, port))
     sock.subscribe(b'') # subscribe to all topics on this port (only images)
     
-    print ("{}: Image receiver thread connected to socket.".format(num))
+    print ("w{}: Image receiver thread connected to socket.".format(num))
     
     # main receiving loop
     prev_time = time.time()
@@ -46,16 +46,16 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
             p_image_queue.put((name,im,time.time())) 
             p_new_im_id_queue.put(name)
             prev_time = time.time()
-            if VERBOSE: print("{}: Image receiver thread received image {} at {}".format(num,name,time.ctime(prev_time)))
+            if VERBOSE: print("w{}: Image receiver thread received image {} at {}".format(num,name,time.ctime(prev_time)))
         except zmq.ZMQError:
             time.sleep(0.1)
             pass
         
     sock.close()
-    print ("{}: Image receiver thread closed socket.".format(num))
+    print ("w{}: Image receiver thread closed socket.".format(num))
 
 
-def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,num = 0):
+def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worker_num = 0):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
@@ -69,7 +69,7 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,num =
     context = zmq.Context()
     sock = context.socket(zmq.PUB)
     sock.bind("tcp://{}:{}".format(host, port))
-    time.sleep(5) # pause to allow subscribers to connect
+    time.sleep(3) # pause to allow subscribers to connect
     
     # sending loop
     prev_time = time.time()
@@ -80,7 +80,7 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,num =
             #sock.send_string(topic)
             sock.send_pyobj(payload)
             prev_time = time.time()
-            if VERBOSE: print("{}: Sender thread sent message at {}".format(num,time.ctime(prev_time)))
+            if VERBOSE: print("w{}: Sender thread sent message at {}".format(worker_num,time.ctime(prev_time)))
             
             
         except queue.Empty:
@@ -88,10 +88,10 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,num =
     
     sock.close()
     context.term()
-    print ("{}: Message sender thread closed socket.".format(num))
+    print ("w{}: Message sender thread closed socket.".format(worker_num))
 
 
-def receive_messages(hosts,ports,p_lb_queue, p_audit_queue, timeout = 20, VERBOSE = False,worker_num = 0):
+def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer, timeout = 20, VERBOSE = False,worker_num = 0):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
@@ -131,7 +131,7 @@ def receive_messages(hosts,ports,p_lb_queue, p_audit_queue, timeout = 20, VERBOS
                 # send audit_requests to two other 
                 (im_id,auditors) = data
                 if worker_num in auditors:
-                    p_audit_queue.put(im_id)
+                    p_audit_buffer.put(im_id)
             else:
                 pass
 
@@ -142,47 +142,58 @@ def receive_messages(hosts,ports,p_lb_queue, p_audit_queue, timeout = 20, VERBOS
         
     sock.close()
     context.term()
-    print ("{}: Message receiver thread closed socket.".format(worker_num))
+    print ("w{}: Message receiver thread closed socket.".format(worker_num))
 
 
-def heartbeat(p_average_time,p_message_queue,p_task_queue,interval = 0.5,timeout = 20, VERBOSE = False, num = 0):
+def heartbeat(p_average_time,p_message_queue,p_num_tasks,interval = 0.5,timeout = 20, VERBOSE = False, worker_num = 0):
     """
     Sends out as a heartbeat the average wait time at regular intervals
     p_average_time - shared variable for average time,
     """
 
     # get average time
-    avg_time = p_average_time.get()
-    p_average_time.put(avg_time)
+    with p_average_time.get_lock():
+        avg_time = p_average_time.value
+    #get num_tasks
+    with p_num_tasks.get_lock():
+        num_tasks = p_num_tasks.value
     
-    last_wait_time = avg_time* p_task_queue.qsize()
+    
+    last_wait = avg_time* (num_tasks+1)
     prev_time = time.time()
     
     while prev_time + timeout > time.time():
         # get average time
-        avg_time = p_average_time.get()
-        p_average_time.put(avg_time)
-        wait_time = avg_time * p_task_queue.qsize()
+        with p_average_time.get_lock():
+            avg_time = p_average_time.value
+        #get num_tasks
+        with p_num_tasks.get_lock():
+            num_tasks = p_num_tasks.value
+            
+        cur_wait = avg_time * (num_tasks+1)
         
         # send message
-        message = ("heartbeat",(time.time(),wait_time,num))
+        message = ("heartbeat",(time.time(),cur_wait,worker_num))
         p_message_queue.put(message)
         
-        if VERBOSE: print("{}: Heartbeat thread added heartbeat {:.2f}s x {} tasks to message queue.".format(num,avg_time,p_task_queue.qsize()))
+        if VERBOSE: print("w{}: Heartbeat thread added '{:.2f}s' to message queue.".format(
+                worker_num,cur_wait))
         
         # updates prev_time whenever wait time changes
-        if wait_time != last_wait_time:
+        if cur_wait != last_wait:
             prev_time = time.time() 
-            last_wait_time = wait_time
+            last_wait = cur_wait
         
         # a bit imprecise since the other operations in the loop do take some time
         time.sleep(interval)
     
-    if VERBOSE: print("{}: Heartbeat thread exited.".format(num))
+    print("w{}: Heartbeat thread exited.".format(worker_num))
     
 
 
-def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,p_average_time, timeout = 20, lb_timeout = 2, VERBOSE = True,num = 0):
+def load_balance(p_new_image_id_queue,p_task_buffer,p_lb_results,p_message_queue,
+                 p_average_time,p_num_tasks, timeout = 20, lb_timeout = 2, 
+                 VERBOSE = True,num = 0):
     """
     Every time a new image is added to the new_image_id_queue, sends worker's 
     current estimated wait time to all other workers, waits for timeout, and 
@@ -227,14 +238,20 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,
             for i in deletions:
                 del all_received_times[i]
     
-            # get own average time
-            avg_time = p_average_time.get()
-            p_average_time.put(avg_time)
+            # get average time
+            with p_average_time.get_lock():
+                avg_time = p_average_time.value
+            #get num_tasks
+            with p_num_tasks.get_lock():
+                num_tasks = p_num_tasks.value
+            cur_wait = avg_time* (num_tasks + 1)
             
             # this worker has minimum time to process, so add to task queue
-            if min_time >= p_task_queue.qsize() * avg_time:
-                p_task_queue.put(im_id)
-                if VERBOSE: print("{}: Load balancer added {} to task list.".format(num,im_id))
+            if min_time >= cur_wait:
+                p_task_buffer.put(im_id)
+                if VERBOSE: print("w{}: Load balancer added {} to task list.".format(num,im_id))
+                
+                
                 
             prev_time = time_received
             
@@ -243,12 +260,12 @@ def load_balance(p_new_image_id_queue,p_task_queue,p_lb_results,p_message_queue,
             time.sleep(0.1)
             pass
                 
-    print("{}: Load balancer thread exited.".format(num))
+    print("w{}: Load balancer thread exited.".format(num))
  
-def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,audit_rate,
+def work_function(p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,audit_rate,
                   p_average_time,timeout = 20, VERBOSE = True, worker_num = 0,num_workers = 1):
     """
-    -Repeatedly gets first image from image_queue. If in audit_queue or task_queue,
+    -Repeatedly gets first image from image_queue. If in audit_buffer or task_buffer,
     processes image. Otherwise, discards image and loads next.
     -Processing an image consists of performing object detection on the image and
     outputting the results (numpy array)
@@ -261,31 +278,35 @@ def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,audit
                                 'simple_yolo/yolov3.weights',
                                 'simple_yolo/data/coco.names',
                                 'simple_yolo/pallete')
-    audit_list = [] # will store all im_ids taken from p_audit_queue
-    task_list = [] # will store all im_ids taken from p_task_queue
+    audit_list = [] # will store all im_ids taken from p_audit_buffer
+    task_list = [] # will store all im_ids taken from p_task_buffer
     
-    time.sleep(10) # to give load balancer a chance to get ahead
+    time.sleep(5)
+    count = 0
     prev_time = time.time()
     while time.time() - prev_time < timeout:
         try:
             # get image off of image_queue
             (im_id,image,im_time_received) = p_image_queue.get(timeout = 0)
-            prev_time = time.time()
-            print("{} work began processing image {}.".format(worker_num, im_id))
+            
             
             # update audit_list and task_list
             while True:
                 try: 
-                    audit_id = p_audit_queue.get(timeout = 0)
+                    audit_id = p_audit_buffer.get(timeout = 0)
                     audit_list.append(audit_id)
                 except queue.Empty:
                     break
             while True:
                 try: 
-                    task_id = p_task_queue.get(timeout = 0)
+                    task_id = p_task_buffer.get(timeout = 0)
                     task_list.append(task_id)
                 except queue.Empty:
                     break
+            
+            # update p_num_tasks
+            with p_num_tasks.get_lock():
+                p_num_tasks.value = int(len(task_list) + len(audit_list))
             
             # check if audit task, normal task, or neither
             AUDIT = False
@@ -295,18 +316,22 @@ def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,audit
             if im_id in audit_list:
                 AUDIT = True
                 
-            if AUDIT or TASK:  
+            if AUDIT or TASK:
+                if VERBOSE: print("w{} work began processing image {}.".format(worker_num, im_id))
+                count += 1
                 # do work
                 work_start_time = time.time()
-                result, _ = model.detect(image)
+                #result, _ = model.detect(image)
+                result = np.zeros([10,10])
                 work_end_time = time.time()
+                prev_time = time.time()
                 
                 # if audit, write results to monitor process
                 if AUDIT:
                     # package message
-                    message = ("audit_result",im_id,worker_num,result)
+                    message = ("audit_result",(im_id,worker_num,result))
                     p_message_queue.put(message)
-                    if VERBOSE: print("{}: work audit results on image {} to message queue".format(worker_num, im_id))
+                    if VERBOSE: print("w{}: work audit results on image {} to message queue".format(worker_num, im_id))
                 # if task, write results to database and report metrics to monitor process
                 if TASK:
                     # write results to database
@@ -317,14 +342,14 @@ def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,audit
                     proc_time = work_end_time - work_start_time
                     
                     # update average time with weighting of current speed at 0.2
-                    avg_time = p_average_time.get()
-                    avg_time = avg_time*0.8 + 0.2* avg_time
-                    p_average_time.put(avg_time)
+                    with p_average_time.get_lock():
+                        avg_time = p_average_time.value*0.8 + 0.2* proc_time
+                        p_average_time.value = avg_time
                     
                     # send latency, processing time and average processing time to monitor
-                    message = ("metrics", worker_num, proc_time,avg_time,latency)
+                    message = ("metrics", (worker_num, proc_time,avg_time,latency))
                     p_message_queue.put(message)
-                    if VERBOSE: print("{}: work metrics on image {} sent to message queue".format(worker_num, im_id))
+                    if VERBOSE: print("w{}: Work metrics on image {} sent to message queue".format(worker_num, im_id))
                     
                     # if this task is not itself an audit, randomly audit 
                     #with p_audit_rate probability
@@ -334,7 +359,7 @@ def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,audit
                     
                     if not AUDIT and random.random() < audit_rate_val:
                         # send result to monitor process
-                        message = ("audit_result",im_id,worker_num,result)
+                        message = ("audit_result",(im_id,worker_num,result))
                         p_message_queue.put(message)
                         
                         # get all worker nums besides this worker's
@@ -352,14 +377,22 @@ def work_function(p_image_queue,p_task_queue,p_audit_queue,p_message_queue,audit
                         # send audit request message
                         message = ("audit_request", (im_id,auditors))
                         p_message_queue.put(message)
-                        if VERBOSE: print("{}: work requested audit of image {}".format(worker_num, im_id))
+                        if VERBOSE: print("w{}: Work requested audit of image {}".format(worker_num, im_id))
                         
+            else:
+                # still update prev_time if image was not a task or an audit
+                prev_time = time.time()
         # no images in p_image_queue    
         except queue.Empty:
             time.sleep(0.1)
         
-    print("{}: work thread exited.".format(worker_num))
+    print("w{}: Work thread exited. {} images processed".format(worker_num,count))
 
+    
+    
+    
+    
+    
     
 # tester code
 if __name__ == "__main__":
@@ -402,17 +435,17 @@ if __name__ == "__main__":
         p_image_queue = queue.Queue()
         p_new_id_queue = queue.Queue()
         p_message_queue = queue.Queue()
-        p_task_queue = queue.Queue()
+        p_task_buffer = queue.Queue()
         p_lb_results = queue.Queue()
-        p_average_time = queue.Queue()
-        p_average_time.put(1)
+        p_average_time = mp.Value('f',1+0.01*worker_num, lock = True)
+        p_num_tasks = mp.Value('i',0,lock = True)
         
         t_im_recv = threading.Thread(target = receive_images, args = (p_image_queue,p_new_id_queue,))
         t_load_bal = threading.Thread(target = load_balance, 
-                                      args = (p_new_id_queue,p_task_queue,
-                                              p_lb_results,p_message_queue,p_average_time))
+                                      args = (p_new_id_queue,p_task_buffer,
+                                              p_lb_results,p_message_queue,p_average_time,p_num_tasks))
         t_send_messages = threading.Thread(target = send_messages, args = ("127.0.0.1",5200,p_message_queue,))
-        t_heartbeat = threading.Thread(target = heartbeat, args = (p_average_time,p_message_queue,p_task_queue,))
+        t_heartbeat = threading.Thread(target = heartbeat, args = (p_average_time,p_message_queue,p_num_tasks))
         
         t_heartbeat.start()
         t_im_recv.start()
@@ -423,7 +456,7 @@ if __name__ == "__main__":
         t_im_recv.join()
         t_load_bal.join()
         t_send_messages.join()
-        t_heartbeat.join
+        t_heartbeat.join()
         
     # Test 4 - Test wrk_function
     if True:
@@ -438,23 +471,23 @@ if __name__ == "__main__":
         p_image_queue = queue.Queue()
         p_new_id_queue = queue.Queue()
         p_message_queue = queue.Queue()
-        p_task_queue = queue.Queue()
+        p_task_buffer = queue.Queue()
         p_lb_results = queue.Queue()
-        p_audit_queue = queue.Queue()
+        p_audit_buffer = queue.Queue()
         
-        p_average_time = queue.Queue()
-        p_average_time.put(1)
+        p_average_time = mp.Value('f',1+0.01*0, lock = True)
+        p_num_tasks = mp.Value('i',0,lock = True)
         
         audit_rate = mp.Value('f',0.1,lock = True)
         
         t_im_recv = threading.Thread(target = receive_images, args = (p_image_queue,p_new_id_queue,))
         t_load_bal = threading.Thread(target = load_balance, 
-                                      args = (p_new_id_queue,p_task_queue,
-                                              p_lb_results,p_message_queue,p_average_time))
+                                      args = (p_new_id_queue,p_task_buffer,
+                                              p_lb_results,p_message_queue,p_average_time,p_num_tasks))
         t_send_messages = threading.Thread(target = send_messages, args = ("127.0.0.1",5200,p_message_queue,))
-        t_heartbeat = threading.Thread(target = heartbeat, args = (p_average_time,p_message_queue,p_task_queue,))
+        t_heartbeat = threading.Thread(target = heartbeat, args = (p_average_time,p_message_queue,p_num_tasks,))
         t_work = threading.Thread(target = work_function, 
-                                  args = (p_image_queue,p_task_queue,p_audit_queue,p_message_queue,audit_rate,p_average_time,
+                                  args = (p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,audit_rate,p_average_time,
                                           20, True, 0,2))
         
         
