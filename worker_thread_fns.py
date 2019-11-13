@@ -192,7 +192,7 @@ def heartbeat(p_average_time,p_message_queue,p_num_tasks,interval = 0.5,timeout 
 
 
 def load_balance(p_new_image_id_queue,p_task_buffer,p_lb_results,p_message_queue,
-                 p_average_time,p_num_tasks, timeout = 20, lb_timeout = 2, 
+                 p_average_time,p_num_tasks,p_last_balanced, timeout = 20, lb_timeout = 2, 
                  VERBOSE = True,num = 0):
     """
     Every time a new image is added to the new_image_id_queue, sends worker's 
@@ -251,7 +251,9 @@ def load_balance(p_new_image_id_queue,p_task_buffer,p_lb_results,p_message_queue
                 p_task_buffer.put(im_id)
                 if VERBOSE: print("w{}: Load balancer added {} to task list.".format(num,im_id))
                 
-                
+            # get average time
+            with p_last_balanced.get_lock():
+                p_last_balanced.value = im_id    
                 
             prev_time = time_received
             
@@ -263,7 +265,7 @@ def load_balance(p_new_image_id_queue,p_task_buffer,p_lb_results,p_message_queue
     print("w{}: Load balancer thread exited.".format(num))
  
 def work_function(p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,audit_rate,
-                  p_average_time,timeout = 20, VERBOSE = True, worker_num = 0,num_workers = 1):
+                  p_average_time,p_last_balanced,timeout = 20, VERBOSE = True, worker_num = 0,num_workers = 1):
     """
     -Repeatedly gets first image from image_queue. If in audit_buffer or task_buffer,
     processes image. Otherwise, discards image and loads next.
@@ -289,6 +291,15 @@ def work_function(p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,aud
             # get image off of image_queue
             (im_id,image,im_time_received) = p_image_queue.get(timeout = 0)
             
+            # get average time
+            with p_last_balanced.get_lock():
+                last_balanced = p_last_balanced.value  
+                
+            # wait until the last balanced image is at least equal with im_id
+            while last_balanced < im_id:
+                time.sleep(0.01)
+                with p_last_balanced.get_lock():
+                    last_balanced = p_last_balanced.value  
             
             # update audit_list and task_list
             while True:
@@ -313,8 +324,10 @@ def work_function(p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,aud
             TASK = False
             if im_id in task_list:
                 TASK = True
+                task_list.remove(im_id)
             if im_id in audit_list:
                 AUDIT = True
+                audit_list.remove(im_id)
                 
             if AUDIT or TASK:
                 if VERBOSE: print("w{} work began processing image {}.".format(worker_num, im_id))
@@ -477,17 +490,18 @@ if __name__ == "__main__":
         
         p_average_time = mp.Value('f',1+0.01*0, lock = True)
         p_num_tasks = mp.Value('i',0,lock = True)
-        
+        p_last_balanced = mp.Value('i',-1,lock = True)
+
         audit_rate = mp.Value('f',0.1,lock = True)
         
         t_im_recv = threading.Thread(target = receive_images, args = (p_image_queue,p_new_id_queue,))
         t_load_bal = threading.Thread(target = load_balance, 
                                       args = (p_new_id_queue,p_task_buffer,
-                                              p_lb_results,p_message_queue,p_average_time,p_num_tasks))
+                                              p_lb_results,p_message_queue,p_average_time,p_num_tasks,p_last_balanced,))
         t_send_messages = threading.Thread(target = send_messages, args = ("127.0.0.1",5200,p_message_queue,))
         t_heartbeat = threading.Thread(target = heartbeat, args = (p_average_time,p_message_queue,p_num_tasks,))
         t_work = threading.Thread(target = work_function, 
-                                  args = (p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,audit_rate,p_average_time,
+                                  args = (p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,audit_rate,p_average_time,p_last_balanced,
                                           20, True, 0,2))
         
         

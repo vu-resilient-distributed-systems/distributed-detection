@@ -33,7 +33,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     # a queue is used even though the value it stores is a float
     p_average_time = mp.Value('f',1+0.01*worker_num, lock = True)
     p_num_tasks = mp.Value('i',0,lock = True)
-    
+    p_last_balanced = mp.Value('i',-1,lock = True)
     
     # get sender port
     host = hosts[worker_num]
@@ -80,6 +80,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                     p_message_queue,
                                     p_average_time,
                                     p_num_tasks,
+                                    p_last_balanced,
                                     timeout,
                                     15,
                                     True, #verbose
@@ -101,6 +102,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                p_message_queue,
                                audit_rate, # shared across all processes
                                p_average_time,
+                               p_last_balanced,
                                timeout,
                                True,
                                worker_num, 
