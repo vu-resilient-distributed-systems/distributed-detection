@@ -191,9 +191,19 @@ def heartbeat(p_average_time,p_message_queue,p_num_tasks,interval = 0.5,timeout 
     
 
 
-def load_balance(p_new_image_id_queue,p_task_buffer,p_lb_results,p_message_queue,
-                 p_average_time,p_num_tasks,p_last_balanced, timeout = 20, lb_timeout = 2, 
-                 VERBOSE = True,num = 0):
+def load_balance(p_new_image_id_queue,
+                 p_task_buffer,
+                 p_lb_results,
+                 p_message_queue,
+                 p_average_time,
+                 p_num_tasks,
+                 p_last_balanced,
+                 audit_rate,
+                 timeout = 20,
+                 lb_timeout = 2, 
+                 VERBOSE = True,
+                 num_workers = 1,
+                 worker_num = 0):
     """
     Every time a new image is added to the new_image_id_queue, sends worker's 
     current estimated wait time to all other workers, waits for timeout, and 
@@ -249,8 +259,31 @@ def load_balance(p_new_image_id_queue,p_task_buffer,p_lb_results,p_message_queue
             # this worker has minimum time to process, so add to task queue
             if min_time >= cur_wait:
                 p_task_buffer.put(im_id)
-                if VERBOSE: print("w{}: Load balancer added {} to task list.".format(num,im_id))
+                if VERBOSE: print("w{}: Load balancer added {} to task list.".format(worker_num,im_id))
+            
+                # randomly audit with audit_rate probability
+                with audit_rate.get_lock():
+                    audit_rate_val = audit_rate.value
                 
+                if random.random() < audit_rate_val:
+                
+                    # get all worker nums besides this worker's
+                    worker_nums = [i for i in range(num_workers)]
+                    worker_nums.remove(worker_num)
+                    random.shuffle(worker_nums)
+                    
+                    # get up to two auditors if there are that many other workers
+                    auditors = []
+                    if len(worker_nums)>0:
+                        auditors.append(worker_nums[0])
+                        if len(worker_nums) > 1:
+                            auditors.append(worker_nums[1])
+                            
+                    # send audit request message
+                    message = ("audit_request", (im_id,auditors))
+                    p_message_queue.put(message)
+                    if VERBOSE: print("w{}: LB requested audit of image {} from {}".format(worker_num, im_id,auditors))
+            
             # get average time
             with p_last_balanced.get_lock():
                 p_last_balanced.value = im_id    
@@ -262,28 +295,37 @@ def load_balance(p_new_image_id_queue,p_task_buffer,p_lb_results,p_message_queue
             time.sleep(0.1)
             pass
                 
-    print("w{}: Load balancer thread exited.".format(num))
+    print("w{}: Load balancer thread exited.".format(worker_num))
  
-def work_function(p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,audit_rate,
-                  p_average_time,p_last_balanced,timeout = 20, VERBOSE = True, worker_num = 0,num_workers = 1):
+def work_function(p_image_queue,
+                  p_task_buffer,
+                  p_audit_buffer,
+                  p_message_queue,
+                  p_average_time,
+                  p_last_balanced,
+                  timeout = 20, 
+                  VERBOSE = True,
+                  worker_num = 0):
     """
     -Repeatedly gets first image from image_queue. If in audit_buffer or task_buffer,
     processes image. Otherwise, discards image and loads next.
     -Processing an image consists of performing object detection on the image and
     outputting the results (numpy array)
-    -If not audit, the results are written to a local data file, and processing speed, latency, and average processing speed are reported to monitor process
-    -If audit, full results are sent to monitor process
+    -If task, the results are written to a local data file, and processing speed, latency, and average processing speed are reported to monitor process
+    -If audit, full results are sent to monitor process and are not written to file
+
     """ 
     
     # create network for doing work
     model = Darknet_Detector('simple_yolo/cfg/yolov3.cfg',
                                 'simple_yolo/yolov3.weights',
                                 'simple_yolo/data/coco.names',
-                                'simple_yolo/pallete')
+    
+                            'simple_yolo/pallete')
     audit_list = [] # will store all im_ids taken from p_audit_buffer
     task_list = [] # will store all im_ids taken from p_task_buffer
     
-    time.sleep(5)
+    # initialize loop
     count = 0
     prev_time = time.time()
     while time.time() - prev_time < timeout:
@@ -342,7 +384,7 @@ def work_function(p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,aud
                 # if audit, write results to monitor process
                 if AUDIT:
                     # package message
-                    message = ("audit_result",(im_id,worker_num,result))
+                    message = ("audit_result",(worker_num,im_id,result))
                     p_message_queue.put(message)
                     if VERBOSE: print("w{}: work audit results on image {} to message queue".format(worker_num, im_id))
                 # if task, write results to database and report metrics to monitor process
@@ -360,37 +402,10 @@ def work_function(p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,aud
                         p_average_time.value = avg_time
                     
                     # send latency, processing time and average processing time to monitor
-                    message = ("metrics", (worker_num, proc_time,avg_time,latency))
+                    message = ("task_result", (worker_num,im_id, proc_time,avg_time,latency,result))
                     p_message_queue.put(message)
                     if VERBOSE: print("w{}: Work metrics on image {} sent to message queue".format(worker_num, im_id))
                     
-                    # if this task is not itself an audit, randomly audit 
-                    #with p_audit_rate probability
-                    with audit_rate.get_lock():
-                        audit_rate_val = audit_rate.value
-                    
-                    
-                    if not AUDIT and random.random() < audit_rate_val:
-                        # send result to monitor process
-                        message = ("audit_result",(im_id,worker_num,result))
-                        p_message_queue.put(message)
-                        
-                        # get all worker nums besides this worker's
-                        worker_nums = [i for i in range(num_workers)]
-                        worker_nums.remove(worker_num)
-                        random.shuffle(worker_nums)
-                        
-                        # get up to two auditors if there are that many other workers
-                        auditors = []
-                        if len(worker_nums)>0:
-                            auditors.append(worker_nums[0])
-                            if len(worker_nums) > 1:
-                                auditors.append(worker_nums[1])
-                                
-                        # send audit request message
-                        message = ("audit_request", (im_id,auditors))
-                        p_message_queue.put(message)
-                        if VERBOSE: print("w{}: Work requested audit of image {}".format(worker_num, im_id))
                         
             else:
                 # still update prev_time if image was not a task or an audit
@@ -492,17 +507,37 @@ if __name__ == "__main__":
         p_num_tasks = mp.Value('i',0,lock = True)
         p_last_balanced = mp.Value('i',-1,lock = True)
 
-        audit_rate = mp.Value('f',0.1,lock = True)
+        audit_rate = mp.Value('f',0.5,lock = True)
         
         t_im_recv = threading.Thread(target = receive_images, args = (p_image_queue,p_new_id_queue,))
+        
         t_load_bal = threading.Thread(target = load_balance, 
-                                      args = (p_new_id_queue,p_task_buffer,
-                                              p_lb_results,p_message_queue,p_average_time,p_num_tasks,p_last_balanced,))
+                                      args = (p_new_id_queue,
+                                             p_task_buffer,
+                                             p_lb_results,
+                                             p_message_queue,
+                                             p_average_time,
+                                             p_num_tasks,
+                                             p_last_balanced,
+                                             audit_rate,
+                                             20,
+                                             2, 
+                                             True,
+                                             3,
+                                             0))
+        
         t_send_messages = threading.Thread(target = send_messages, args = ("127.0.0.1",5200,p_message_queue,))
         t_heartbeat = threading.Thread(target = heartbeat, args = (p_average_time,p_message_queue,p_num_tasks,))
         t_work = threading.Thread(target = work_function, 
-                                  args = (p_image_queue,p_task_buffer,p_audit_buffer,p_message_queue,audit_rate,p_average_time,p_last_balanced,
-                                          20, True, 0,2))
+                                  args = (p_image_queue,
+                                          p_task_buffer,
+                                          p_audit_buffer,
+                                          p_message_queue,
+                                          p_average_time,
+                                          p_last_balanced,
+                                          20, 
+                                          True,
+                                          0))
         
         
         t_heartbeat.start()
