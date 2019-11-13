@@ -10,10 +10,11 @@ import multiprocessing as mp
 import queue
 import random
 
-from worker_thread_fns import receive_images,send_messages,receive_messages,load_balance,heartbeat
+from worker_thread_fns import ( receive_images,send_messages,receive_messages,
+                               load_balance,heartbeat,work_function )
 
 
-def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = False):
+def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     """
     Given a list of hosts and ports (one pair for each worker) and an id num,
     creates a series of threads and shared variables that carry out the work in
@@ -26,11 +27,14 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = False):
     p_message_queue = queue.Queue() # for storing messages to send
     p_task_queue = queue.Queue() # for storing tasks assigned to worker
     p_lb_results = queue.Queue() # for storing load balancing results
+    p_audit_queue = queue.Queue() # for storing audit requests
     
     # since shared variables across threads in multiple processes is a bit of a pain,
     # a queue is used even though the value it stores is a float
     p_average_time = queue.Queue()
     p_average_time.put(1+0.01*worker_num) # initialize with a bit of difference
+    
+    
     
     # get sender port
     host = hosts[worker_num]
@@ -89,6 +93,19 @@ def worker(hosts,ports,worker_num, timeout = 20, VERBOSE = False):
                                     VERBOSE,
                                     worker_num))
     
+    t_work = threading.Thread(target = work_function, args = 
+                              (p_image_queue,
+                               p_task_queue,
+                               p_audit_queue,
+                               p_message_queue,
+                               audit_rate, # shared across all processes
+                               p_average_time,
+                               timeout,
+                               True,
+                               worker_num, 
+                               len(ports)+1)) # total number of workers
+                                    
+    
     # start all threads
     thread_im_rec.start()
     t_mes_recv.start()
@@ -112,7 +129,7 @@ if __name__ == "__main__":
     num_workers = 3
     timeout = 20
     VERBOSE = False
-    #p_average_time = 0
+    audit_rate = mp.Value('f',0.1,lock = True)
     
     for i in range(num_workers):
         hosts.append("127.0.0.1")
@@ -120,7 +137,7 @@ if __name__ == "__main__":
     
     processes = []
     for i in range(num_workers):
-        p = mp.Process(target = worker, args = (hosts,ports,i,timeout,VERBOSE,))
+        p = mp.Process(target = worker, args = (hosts,ports,audit_rate,i,timeout,VERBOSE,))
         p.start()
         processes.append(p)
     print("All processes started")
