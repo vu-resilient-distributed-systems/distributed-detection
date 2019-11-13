@@ -247,7 +247,7 @@ def load_balance(p_new_image_id_queue,
             deletions.reverse()
             for i in deletions:
                 del all_received_times[i]
-    
+
             # get average time
             with p_average_time.get_lock():
                 avg_time = p_average_time.value
@@ -256,17 +256,19 @@ def load_balance(p_new_image_id_queue,
                 num_tasks = p_num_tasks.value
             cur_wait = avg_time* (num_tasks + 1)
             
+            print("Cur_wait time: {} Min time: {}".format(cur_wait,min_time))
+            
             # this worker has minimum time to process, so add to task queue
             if min_time >= cur_wait:
                 p_task_buffer.put(im_id)
                 if VERBOSE: print("w{}: Load balancer added {} to task list.".format(worker_num,im_id))
-            
+
                 # randomly audit with audit_rate probability
                 with audit_rate.get_lock():
                     audit_rate_val = audit_rate.value
                 
                 if random.random() < audit_rate_val:
-                
+
                     # get all worker nums besides this worker's
                     worker_nums = [i for i in range(num_workers)]
                     worker_nums.remove(worker_num)
@@ -302,6 +304,7 @@ def work_function(p_image_queue,
                   p_audit_buffer,
                   p_message_queue,
                   p_average_time,
+                  p_num_tasks,
                   p_last_balanced,
                   timeout = 20, 
                   VERBOSE = True,
@@ -374,10 +377,14 @@ def work_function(p_image_queue,
             if AUDIT or TASK:
                 if VERBOSE: print("w{} work began processing image {}.".format(worker_num, im_id))
                 count += 1
-                # do work
+                
+                ############## DO WORK ############## 
                 work_start_time = time.time()
-                #result, _ = model.detect(image)
-                result = np.zeros([10,10])
+                result, _ = model.detect(image)
+                
+                #result = np.zeros([10,10])
+                #time.sleep(5)
+                
                 work_end_time = time.time()
                 prev_time = time.time()
                 
@@ -386,7 +393,7 @@ def work_function(p_image_queue,
                     # package message
                     message = ("audit_result",(worker_num,im_id,result))
                     p_message_queue.put(message)
-                    if VERBOSE: print("w{}: work audit results on image {} to message queue".format(worker_num, im_id))
+                    if VERBOSE: print("w{}: work audit results on image {} semtr to message queue".format(worker_num, im_id))
                 # if task, write results to database and report metrics to monitor process
                 if TASK:
                     # write results to database
@@ -534,6 +541,7 @@ if __name__ == "__main__":
                                           p_audit_buffer,
                                           p_message_queue,
                                           p_average_time,
+                                          p_num_tasks,
                                           p_last_balanced,
                                           20, 
                                           True,
