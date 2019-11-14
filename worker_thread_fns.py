@@ -8,6 +8,7 @@ process
 """
 
 import zmq
+import socket
 import random
 import time
 import queue
@@ -19,7 +20,7 @@ import os
 
 from simple_yolo.yolo_detector import Darknet_Detector
 
-def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True,num = 0):
+def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True,worker_num = 0):
     """
     Creates a ZMQ socket and listens on specified port, receiving and writing to
     shared image queue the received images
@@ -35,7 +36,7 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
     sock.connect("tcp://{}:{}".format(host, port))
     sock.subscribe(b'') # subscribe to all topics on this port (only images)
     
-    print ("w{}: Image receiver thread connected to socket.".format(num))
+    print ("w{}: Image receiver thread connected to socket.".format(worker_num))
     
     # main receiving loop
     prev_time = time.time()
@@ -46,14 +47,143 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
             p_image_queue.put((name,im,time.time())) 
             p_new_im_id_queue.put(name)
             prev_time = time.time()
-            if VERBOSE: print("w{}: Image receiver thread received image {} at {}".format(num,name,time.ctime(prev_time)))
+            if VERBOSE: print("w{}: Image receiver thread received image {} at {}".format(worker_num,name,time.ctime(prev_time)))
         except zmq.ZMQError:
             time.sleep(0.1)
             pass
         
     sock.close()
-    print ("w{}: Image receiver thread closed socket.".format(num))
+    print ("w{}: Image receiver thread closed socket.".format(worker_num))
 
+
+def query_handler(host,
+                  port,
+                  q_message_queue,
+                  q_query_requests,
+                  q_query_results,
+                  query_timeout = 5,
+                  timeout = 20,
+                  VERBOSE = True,
+                  worker_num = 0):
+    """
+    Has three main functions in main loop:
+        1.  Receives query requests via UDP port specified by host and port, and
+            forwards the requests to all other workers via message queue
+        host - string
+        port - int
+        2.  Upon receiving a query request forwarded from another worker (in q_query_request)
+            accesses own database and returns the requested data via message queue
+        q_query_requests - thread-shared queue object
+        q_message_queue - thread-shared queue object
+        3. Parses all return values from q_query_result
+        q_query_results - thread-shared queue object
+        4. after timeout period, returns the most common value to the client via message queue
+           i.e. it is assumed client is subscribed to "query_output" from this worker's sender port
+           Also updates own database with this most common value
+        timeout - float - seconds
+    """
+    
+    # specify database file path
+    data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
+    
+    # open UDP socket to receive requests
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((host, port))
+    sock.settimeout(0) # if no message received for 5 seconds, time out
+    print("{}: Query thread opened receiver socket.".format(worker_num))
+    
+    active_queries = {}
+    
+    prev_time = time.time()
+    while time.time() - prev_time < timeout:
+        # 1. receive new external queries
+        try:
+            # receive query
+            queried_im_id = int(sock.recv(1024).decode('utf-8'))
+            prev_time = time.time()
+            
+            # add query to dict of active queries
+            active_queries[queried_im_id] = {"time_in": prev_time,
+                                             "vals": [get_im_data(data_file,queried_im_id)[0]]}
+            
+            # forward query to all other workers via message queue
+            # the False indicates that this is not an internal request
+            message = ("query_request", (queried_im_id,worker_num,False))
+            q_message_queue.put(message)
+        except socket.timeout:
+            pass
+    
+        # 2. respond to all query requests
+        while True:
+            try:
+                # get request from queue - both consistency and external query
+                # requests are handled here, and INTERNAL indicates which type 
+                # this request is so it can be returned to the correct thread
+                (requested_im_id,request_worker_num,INTERNAL) = q_query_requests.get(timeout = 0)
+                prev_time = time.time()
+                
+                # helper function returns relevant numpy array and num_validators or None,0
+                data = get_im_data(data_file,requested_im_id)[0]
+                
+                # send data back via message queue
+                if INTERNAL:
+                    message = ("consistency_result",(data,request_worker_num))
+                else:
+                    message = ("query_result",(data,request_worker_num))
+                q_message_queue.append()  
+                if VERBOSE: print("{}: Responded to query request.".format(worker_num))
+            except queue.Empty:
+                break
+        # 3. parse query results
+        while True:
+            try:
+                (query_im_id,query_data) = q_query_results.get(timeout = 0) 
+                prev_time = time.time()
+                # add if still active
+                if query_im_id in active_queries.keys():
+                    active_queries[query_im_id]["vals"].append(data)  
+                if VERBOSE: print("{}: Parsed to query response.".format(worker_num))
+            except queue.Empty:
+                break
+               
+        # 4.cycle through active queries and return result for all that have timed out
+        for id_tag in active_queries:
+            prev_time = time.time()
+            query = active_queries[id_tag]
+            if query['time_in'] + query_timeout < time.time():
+                # get most common val
+                hash_dict = {}
+                for data in query["vals"]:
+                    if data: # make sure None doesn't become the most common value
+                        data_hash = hash(item.tostring())
+                        if data_hash in hash_dict.keys():
+                            hash_dict[data_hash]["count"] +=1
+                        else:
+                            hash_dict[data_hash]["count"] = 1
+                            hash_dict[data_hash]["data"] = data
+                
+                most_common_data = None
+                count = 0
+                for data_hash in hash_dict:
+                    if hash_dict[data_hash]["count"] > count:
+                        count = hash_dict[data_hash]["count"]
+                        most_common_data = hash_dict[data_hash]["data"]
+        
+                # lastly, compare to own data and see if count is greater than
+                # num_validators on previous data. If not, send own value
+                own_data, own_num_validators = get_im_data(data_file,id_tag)
+                if own_num_validators >= count:
+                    message = ("query_output", own_data)
+                else:
+                    message = ("query_output", most_common_data)
+                    update_data(data_file,id_tag,count,most_common_data)
+                q_message_queue.put(message)
+                if VERBOSE: print("{}: Sent query output.".format(worker_num))
+                
+    # end of main while loop
+    sock.close()
+    print("{}: Query thread exited.".format(worker_num))                
+            
 
 def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worker_num = 0):
     """
@@ -426,13 +556,13 @@ def work_function(p_image_queue,
     print("w{}: Work thread exited. {} images processed".format(worker_num,count))
 
     
-def write_data_csv(file,data,im_id):
+def write_data_csv(file,data,im_id,num_validators=1):
     """
     Writes data in csv for, appending to file and labeling each row with im_id
     """
     with open(file, mode = 'a') as f:
         for row in data:
-            f.write(str(im_id))
+            f.write((str(im_id) + " , " + str(num_validators))
             for val in row:
                 f.write(" , ")
                 f.write(str(val))

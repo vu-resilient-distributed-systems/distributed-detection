@@ -19,7 +19,7 @@ import _pickle as pickle
 import numpy as np
 
 
-def publish_queries(rate,pub_socket,im_sub_socket,dest_host,dest_port,worker_hosts,worker_ports):
+def publish_queries(rate,pub_socket,im_sub_socket,worker_hosts,worker_ports):
     """ publishes a request for information on a given image at a random rate
     rate - float -  average rate of queries (0.5) = 0.5 queries per second
     socket - socket to publish queries on 
@@ -28,8 +28,6 @@ def publish_queries(rate,pub_socket,im_sub_socket,dest_host,dest_port,worker_hos
     tpi - time per image sent
     pub_socket - a UDP socket bound to a port for publishing queries
     im_sub_socket - ZMQ subscriber socket bound to a port for receiving images
-    dest_host - string - destination IP address where query results should be sent to
-    dest_port - int - destination port where query results should be sent to
     worker_hosts - list of strings - IP addresses for each worker
     worker_ports - list of ints - port for each worker
     """
@@ -59,7 +57,7 @@ def publish_queries(rate,pub_socket,im_sub_socket,dest_host,dest_port,worker_hos
             worker_port = worker_ports[idx]
             
             # combine into single string
-            message = str(im_id) + ":" + dest_host + ":" + str(dest_port)
+            message = str(im_id)
             pub_socket.sendto(message.encode('utf-8'),(worker_addr,worker_port))
             print("Sent query request: " + message)
             next_time = time.time() + np.random.normal(1/rate,3)
@@ -95,7 +93,7 @@ if __name__ == '__main__':
     worker_ports = []
     for i in range(num_workers):
         worker_hosts.append("127.0.0.1")
-        worker_ports.append(5200+i)
+        worker_ports.append(5300+i)
     print("Opened image subscriber socket")
     
     # create UDP socket to send queries
@@ -104,7 +102,4 @@ if __name__ == '__main__':
     qr_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     print("Opened query publisher socket")
     
-    dest_host = "127.0.0.1"
-    dest_port = 6301
-    
-    publish_queries(rate,qr_sock,im_sock,dest_host,dest_port,worker_hosts,worker_ports)
+    publish_queries(rate,qr_sock,im_sock,worker_hosts,worker_ports)
