@@ -91,8 +91,8 @@ def query_handler(host,
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((host, port))
     sock.setblocking(0) 
-    print("{}: Query thread opened receiver socket.".format(worker_num))
-    
+    print("w{}: Query thread opened receiver socket.".format(worker_num))
+    time.sleep(20) # to ensure some data is written
     
     active_queries = {}
     
@@ -129,41 +129,45 @@ def query_handler(host,
                 
                 # send data back via message queue
                 if INTERNAL:
-                    message = ("consistency_result",(data,request_worker_num))
+                    message = ("consistency_result",(data,requested_im_id,request_worker_num))
                 else:
-                    message = ("query_result",(data,request_worker_num))
-                p_message_queue.append()  
-                if VERBOSE: print("{}: Responded to query request.".format(worker_num))
+                    message = ("query_result",(data,requested_im_id,request_worker_num))
+                p_message_queue.put(message)  
+                if VERBOSE: print("w{}: Responded to query request im {} for worker {}.".format(worker_num,requested_im_id,request_worker_num))
             except queue.Empty:
                 break
+            
         # 3. parse query results
         while True:
             try:
-                (query_im_id,query_data) = p_query_results.get(timeout = 0) 
+                (query_data,query_im_id) = p_query_results.get(timeout = 0) 
                 prev_time = time.time()
                 # add if still active
                 if query_im_id in active_queries.keys():
-                    active_queries[query_im_id]["vals"].append(data)  
-                if VERBOSE: print("{}: Parsed to query response.".format(worker_num))
+                    active_queries[query_im_id]["vals"].append(query_data)  
+                if VERBOSE: print("w{}: Parsed query response for im {}.".format(worker_num,query_im_id))
             except queue.Empty:
                 break
                
         # 4.cycle through active queries and return result for all that have timed out
+        timed_out = []
         for id_tag in active_queries:
             prev_time = time.time()
             query = active_queries[id_tag]
             if query['time_in'] + query_timeout < time.time():
-                # get most common val
+                # get most common val by comparing unique hashes
                 hash_dict = {}
                 for data in query["vals"]:
-                    if data: # make sure None doesn't become the most common value
-                        data_hash = hash(item.tostring())
+                    if type(data) == np.ndarray: # make sure None doesn't become the most common value
+                        data_hash = hash(data.tostring())
                         if data_hash in hash_dict.keys():
                             hash_dict[data_hash]["count"] +=1
                         else:
+                            hash_dict[data_hash] = {}
                             hash_dict[data_hash]["count"] = 1
                             hash_dict[data_hash]["data"] = data
                 
+                # count hashes
                 most_common_data = None
                 count = 0
                 for data_hash in hash_dict:
@@ -172,20 +176,27 @@ def query_handler(host,
                         most_common_data = hash_dict[data_hash]["data"]
         
                 # lastly, compare to own data and see if count is greater than
-                # num_validators on previous data. If not, send own value
-                own_data, own_num_validators = get_im_data(data_file,id_tag)
+                # num_validators on previous data. If not, send own value and 
+                # don't update own value
+                (own_data, own_num_validators) = get_im_data(data_file,id_tag)
                 if own_num_validators >= count:
                     message = ("query_output", own_data)
                 else:
                     message = ("query_output", most_common_data)
                     # update database
-                    update_data(data_file,id_tag,count,most_common_data)
+                    update_data(data_file,count,most_common_data)
                 p_message_queue.put(message)
-                if VERBOSE: print("{}: Sent query output.".format(worker_num))
+                if VERBOSE: print("w{}: Output query result for im {}.".format(worker_num,id_tag))
+                timed_out.append(id_tag)
+          
+        # remove all handled requests
+        timed_out.reverse()
+        for tag in timed_out:
+            del active_queries[tag]
                 
     # end of main while loop
     sock.close()
-    print("{}: Query thread exited.".format(worker_num))                
+    print("w{}: Query thread exited.".format(worker_num))                
             
 
 def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worker_num = 0):
@@ -271,8 +282,9 @@ def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer,p_query_requests,p_q
                 p_query_requests.put(data)
                 
             elif label == "query_result":
-                # data = (query_im_id,query_data)
-                p_query_results.put(data)
+                # data = (queried_data, query_im_id,destination_worker)
+                if data[2] == worker_num:
+                    p_query_results.put(data[0:2]) # since destination worker not necessary
                 
 #            elif label == "consistency_result":
 #                p_consistency_results.put(data)
@@ -523,10 +535,10 @@ def work_function(p_image_queue,
                 
                 ############## DO WORK ############## 
                 work_start_time = time.time()
-#                result, _ = model.detect(image)
+#                result, _ = model.detect(image).data.numpy()
                 
                 # dummy work
-                result = np.random.rand(10,10)
+                result = np.random.rand(10,8)
                 time.sleep(3)
                 
                 work_end_time = time.time()
@@ -584,20 +596,27 @@ def write_data_csv(file,data,im_id,num_validators=1):
 def get_im_data(file,im_id):
     data = np.genfromtxt(file,delimiter = ',')
     # first row is im_id, second row is num_validators
-    out = data[np.where(data[:,0] == im_id)[0],:]
-    
-    if len(out) == 0:
-        out = None
-        num_validators = 0
+    if np.size(data) > 0: # check whether there is any data
+        out = data[np.where(data[:,0] == im_id)[0],:]
+        if len(out) == 0: # check wether im_id is present
+            return None, 0
+        else:
+            num_validators = out[0,1]
+            return out, num_validators
     else:
-        num_validators = out[0,1]
-
-    return out, num_validators
+        return None, 0
+        
     
-def update_data(file,im_id,num_validators, updated_data):
+def update_data(file,num_validators, updated_data):
+    """
+    Given one N x 10 arrray, replaces
+    """
     data = np.genfromtxt(file,delimiter = ',')
-    old_data_removed = data[np.where(data[:,0] != im_id)[0],:]
+    im_id = updated_data[0,0]
+    # update number of validators
     updated_data[:,1] = num_validators
+
+    old_data_removed = data[np.where(data[:,0] != im_id)[0],:]
     new_data = np.concatenate((old_data_removed,updated_data),0)
     
     #overwrite data file
@@ -675,7 +694,7 @@ if __name__ == "__main__":
         t_heartbeat.join()
         
     # Test 4 - Test wrk_function
-    if True:
+    if False:
         """
         set up a test in which images are received and added to new image queue
         load_balancer should add messages to send queue and sender should send them

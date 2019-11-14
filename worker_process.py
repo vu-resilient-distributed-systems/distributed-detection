@@ -9,6 +9,7 @@ import threading
 import multiprocessing as mp
 import queue
 import random
+import os
 
 from worker_thread_fns import ( receive_images,send_messages,receive_messages,
                                load_balance,heartbeat,work_function, query_handler )
@@ -49,6 +50,10 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     # get receiver ports
     hosts.remove(host)
     ports.remove(port)
+    
+    # overwrite datafile
+    with open(os.path.join('databases','worker_{}_database.csv'.format(worker_num)),mode = 'w') as f:
+        pass
     
     # create image receiver thread
     thread_im_rec = threading.Thread(target = receive_images, args = 

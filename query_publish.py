@@ -7,7 +7,7 @@ This file publishes images via ZMQ socket at regular intervals,
 continuing indefinitely 
 """
 # cd "C:\Users\derek\OneDrive\Documents\Derek's stuff\Not Not School\Lab\Code\distributed-detection
-# python query_publish.py 1 5 
+# python query_publish.py 1 4
 
 import zmq
 import socket
