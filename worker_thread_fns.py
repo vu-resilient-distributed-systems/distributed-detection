@@ -17,6 +17,7 @@ import multiprocessing as mp
 import threading
 import numpy as np
 import os
+import csv
 
 from simple_yolo.yolo_detector import Darknet_Detector
 
@@ -562,14 +563,39 @@ def write_data_csv(file,data,im_id,num_validators=1):
     """
     with open(file, mode = 'a') as f:
         for row in data:
-            f.write((str(im_id) + " , " + str(num_validators))
+            f.write((str(im_id) + " , " + str(num_validators)))
             for val in row:
                 f.write(" , ")
                 f.write(str(val))
             f.write("\n") 
      
+def get_im_data(file,im_id):
+    data = np.genfromtxt(file,delimiter = ',')
+    # first row is im_id, second row is num_validators
+    out = data[np.where(data[:,0] == im_id)[0],:]
     
+    if len(out) == 0:
+        out = None
+        num_validators = 0
+    else:
+        num_validators = out[0,1]
+
+    return out, num_validators
     
+def update_data(file,im_id,num_validators, updated_data):
+    data = np.genfromtxt(file,delimiter = ',')
+    old_data_removed = data[np.where(data[:,0] != im_id)[0],:]
+    updated_data[:,1] = num_validators
+    new_data = np.concatenate((old_data_removed,updated_data),0)
+    
+    #overwrite data file
+    with open(file, mode = 'w') as f:
+        for row in new_data:
+            f.write(str(row[0]))
+            for val in row[1:]:
+                f.write(" , ")
+                f.write(str(val))
+            f.write("\n") 
     
     
 # tester code
