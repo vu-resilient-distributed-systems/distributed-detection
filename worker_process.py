@@ -11,7 +11,7 @@ import queue
 import random
 
 from worker_thread_fns import ( receive_images,send_messages,receive_messages,
-                               load_balance,heartbeat,work_function )
+                               load_balance,heartbeat,work_function, query_handler )
 
 
 def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
@@ -28,6 +28,8 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     p_task_buffer = queue.Queue() # for storing tasks assigned to worker
     p_lb_results = queue.Queue() # for storing load balancing results
     p_audit_buffer = queue.Queue() # for storing audit requests
+    p_query_requests = queue.Queue() # for storing query requests
+    p_query_results = queue.Queue() # for storing query results
     
     # use multiprocessing Value for thread-shared values
     p_average_time = mp.Value('f',0.5+0.01*worker_num, lock = True)
@@ -35,10 +37,14 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     p_last_balanced = mp.Value('i',-1,lock = True)
     
     lb_timeout = 1
+    query_timeout = 5
     
     # get sender port
     host = hosts[worker_num]
     port = ports[worker_num]
+    
+    # offset port by 100 for UDP ports for query requests
+    qr_port = ports[worker_num] + 100
     
     # get receiver ports
     hosts.remove(host)
@@ -69,6 +75,8 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                     ports,
                                     p_lb_results,
                                     p_audit_buffer,
+                                    p_query_requests,
+                                    p_query_results,
                                     timeout,
                                     VERBOSE,
                                     worker_num))
@@ -109,6 +117,17 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                               timeout, 
                               True,
                               worker_num))
+    
+    t_query = threading.Thread(target = query_handler, args = 
+                               (host,
+                                qr_port,
+                                p_message_queue,
+                                p_query_requests,
+                                p_query_results,
+                                query_timeout, 
+                                timeout,
+                                True,
+                                worker_num))
                                     
     
     # start all threads
@@ -118,6 +137,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     t_load_bal.start() 
     t_heartbeat.start()
     t_work.start()
+    t_query.start()
     
     # wait for all threads to terminate
     thread_im_rec.join()
@@ -126,6 +146,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     t_work.join()
     t_mes_send.join()
     t_heartbeat.join()
+    t_query.join()
 
 if __name__ == "__main__":
     # tester code for the worker processes
@@ -133,7 +154,7 @@ if __name__ == "__main__":
     hosts = []
     ports = []
     num_workers = 4
-    timeout = 60
+    timeout = 30
     VERBOSE = False
     audit_rate = mp.Value('f',0.1,lock = True)
     

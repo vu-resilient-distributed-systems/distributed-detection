@@ -59,9 +59,9 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
 
 def query_handler(host,
                   port,
-                  q_message_queue,
-                  q_query_requests,
-                  q_query_results,
+                  p_message_queue,
+                  p_query_requests,
+                  p_query_results,
                   query_timeout = 5,
                   timeout = 20,
                   VERBOSE = True,
@@ -72,12 +72,12 @@ def query_handler(host,
             forwards the requests to all other workers via message queue
         host - string
         port - int
-        2.  Upon receiving a query request forwarded from another worker (in q_query_request)
+        2.  Upon receiving a query request forwarded from another worker (in p_query_request)
             accesses own database and returns the requested data via message queue
-        q_query_requests - thread-shared queue object
-        q_message_queue - thread-shared queue object
-        3. Parses all return values from q_query_result
-        q_query_results - thread-shared queue object
+        p_query_requests - thread-shared queue object
+        p_message_queue - thread-shared queue object
+        3. Parses all return values from p_query_result
+        p_query_results - thread-shared queue object
         4. after timeout period, returns the most common value to the client via message queue
            i.e. it is assumed client is subscribed to "query_output" from this worker's sender port
            Also updates own database with this most common value
@@ -90,8 +90,9 @@ def query_handler(host,
     # open UDP socket to receive requests
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((host, port))
-    sock.settimeout(0) # if no message received for 5 seconds, time out
+    sock.setblocking(0) 
     print("{}: Query thread opened receiver socket.".format(worker_num))
+    
     
     active_queries = {}
     
@@ -110,8 +111,8 @@ def query_handler(host,
             # forward query to all other workers via message queue
             # the False indicates that this is not an internal request
             message = ("query_request", (queried_im_id,worker_num,False))
-            q_message_queue.put(message)
-        except socket.timeout:
+            p_message_queue.put(message)
+        except BlockingIOError:# socket.timeout:
             pass
     
         # 2. respond to all query requests
@@ -120,7 +121,7 @@ def query_handler(host,
                 # get request from queue - both consistency and external query
                 # requests are handled here, and INTERNAL indicates which type 
                 # this request is so it can be returned to the correct thread
-                (requested_im_id,request_worker_num,INTERNAL) = q_query_requests.get(timeout = 0)
+                (requested_im_id,request_worker_num,INTERNAL) = p_query_requests.get(timeout = 0)
                 prev_time = time.time()
                 
                 # helper function returns relevant numpy array and num_validators or None,0
@@ -131,14 +132,14 @@ def query_handler(host,
                     message = ("consistency_result",(data,request_worker_num))
                 else:
                     message = ("query_result",(data,request_worker_num))
-                q_message_queue.append()  
+                p_message_queue.append()  
                 if VERBOSE: print("{}: Responded to query request.".format(worker_num))
             except queue.Empty:
                 break
         # 3. parse query results
         while True:
             try:
-                (query_im_id,query_data) = q_query_results.get(timeout = 0) 
+                (query_im_id,query_data) = p_query_results.get(timeout = 0) 
                 prev_time = time.time()
                 # add if still active
                 if query_im_id in active_queries.keys():
@@ -177,8 +178,9 @@ def query_handler(host,
                     message = ("query_output", own_data)
                 else:
                     message = ("query_output", most_common_data)
+                    # update database
                     update_data(data_file,id_tag,count,most_common_data)
-                q_message_queue.put(message)
+                p_message_queue.put(message)
                 if VERBOSE: print("{}: Sent query output.".format(worker_num))
                 
     # end of main while loop
@@ -222,7 +224,7 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worke
     print ("w{}: Message sender thread closed socket.".format(worker_num))
 
 
-def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer, timeout = 20, VERBOSE = False,worker_num = 0):
+def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer,p_query_requests,p_query_results, timeout = 20, VERBOSE = False,worker_num = 0):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
@@ -263,9 +265,19 @@ def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer, timeout = 20, VERBO
                 (im_id,auditors) = data
                 if worker_num in auditors:
                     p_audit_buffer.put(im_id)
+                    
+            elif label == "query_request":
+                # data = (queried_im_id,worker_num,INTERNAL)
+                p_query_requests.put(data)
+                
+            elif label == "query_result":
+                # data = (query_im_id,query_data)
+                p_query_results.put(data)
+                
+#            elif label == "consistency_result":
+#                p_consistency_results.put(data)
             else:
                 pass
-
         
         except zmq.ZMQError:
             time.sleep(0.1)
@@ -514,8 +526,8 @@ def work_function(p_image_queue,
 #                result, _ = model.detect(image)
                 
                 # dummy work
-                result = np.zeros([10,10])
-                time.sleep(9)
+                result = np.random.rand(10,10)
+                time.sleep(3)
                 
                 work_end_time = time.time()
                 prev_time = time.time()
