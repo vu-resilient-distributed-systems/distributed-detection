@@ -286,6 +286,7 @@ def consistency_function(p_message_queue,
                     # don't update own value
                     (own_data, own_num_validators) = get_im_data(data_file,id_tag)
                     if own_num_validators < count:
+                        assert len(most_common_data[0]) > 0, print("most_common_data isn't valid")
                         update_data(data_file,count,most_common_data)
                         if VERBOSE: print("w{}: Consistency update on im {} with {} validators.".format(worker_num,id_tag,count))
                         
@@ -705,9 +706,9 @@ def write_data_csv(file,data,im_id,num_validators=1):
     """
     with open(file, mode = 'a') as f:
         for row in data:
-            f.write((str(im_id) + " , " + str(num_validators)))
+            f.write((str(im_id) + "," + str(num_validators)))
             for val in row:
-                f.write(" , ")
+                f.write(",")
                 f.write(str(val))
             f.write("\n") 
      
