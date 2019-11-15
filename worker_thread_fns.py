@@ -251,7 +251,7 @@ def consistency_function(p_message_queue,
                     # add if still active
                     if query_im_id in active_queries.keys():
                         active_queries[query_im_id]["vals"].append(query_data)  
-                    if VERBOSE: print("w{}: Parsed consistency response for im {}.".format(worker_num,query_im_id))
+                    #if VERBOSE: print("w{}: Parsed consistency response for im {}.".format(worker_num,query_im_id))
                 except queue.Empty:
                     break
                 
@@ -376,7 +376,7 @@ def receive_messages(hosts,
             # deal with different types of messages (different label field)
             if label == "heartbeat":
                 # (time heartbeat generated, workers wait time, worker_num)
-                p_lb_queue.put((data[0],data[1]))
+                p_lb_queue.put(data)
             
             # deal with audit requests
             elif label == "audit_request":
@@ -477,7 +477,7 @@ def load_balance(p_new_image_id_queue,
     the message was sent. Adds image to task list if worker has min wait time
     """
     prev_time = time.time()
-    all_received_times = []
+    all_received_times = {}
     
     while time.time() - prev_time < timeout:
         # if there is a new image id
@@ -489,8 +489,15 @@ def load_balance(p_new_image_id_queue,
             # get all pending times in p_lb_results and append to all_received_times
             while True:
                 try: 
+                    # (time heartbeat generated, workers wait time, worker_num)
                     message = p_lb_results.get(timeout = 0)
-                    all_received_times.append(message)
+                    # if message is more recent than previously stored
+                    # will throw error if there is no entry for that worker num yet
+                    try:
+                        if message[0] > all_received_times[message[2]][0]:
+                            all_received_times[message[2]] = (message[0],message[1])
+                    except KeyError:
+                            all_received_times[message[2]] = (message[0],message[1])
                 except queue.Empty:
                     break
 
@@ -498,13 +505,13 @@ def load_balance(p_new_image_id_queue,
             # also keep running track of min valid time
             min_time = np.inf
             deletions = []
-            for i in range(len(all_received_times)): 
+            for worker in all_received_times: 
                 # each item is of form (time_generated, wait time, worker_num)
-                (other_gen_time, other_wait_time) = all_received_times[i]
+                (other_gen_time, other_wait_time) = all_received_times[worker]
                 
                 # check if item is out of date
                 if other_gen_time + lb_timeout < time_received:
-                    deletions.append(i)
+                    deletions.append(worker)
                 else:
                     if other_wait_time < min_time:
                         min_time = other_wait_time
@@ -641,7 +648,7 @@ def work_function(p_image_queue,
                 audit_list.remove(im_id)
                 
             if AUDIT or TASK:
-                if VERBOSE: print("w{} work began processing image {}.".format(worker_num, im_id))
+                #if VERBOSE: print("w{} work began processing image {}.".format(worker_num, im_id))
                 
                 ############## DO WORK ############## 
                 work_start_time = time.time()
@@ -659,7 +666,7 @@ def work_function(p_image_queue,
                     # package message
                     message = ("audit_result",(worker_num,im_id,result))
                     p_message_queue.put(message)
-                    if VERBOSE: print("w{}: work audit results on image {} sent to message queue".format(worker_num, im_id))
+                    if VERBOSE: print("w{}: Work audit results on image {} sent to message queue".format(worker_num, im_id))
                 # if task, write results to database and report metrics to monitor process
                 if TASK:
                     # write results to database
@@ -678,7 +685,7 @@ def work_function(p_image_queue,
                     # send latency, processing time and average processing time to monitor
                     message = ("task_result", (worker_num,im_id, proc_time,avg_time,latency,result))
                     p_message_queue.put(message)
-                    if VERBOSE: print("w{}: Work metrics on image {} sent to message queue".format(worker_num, im_id))
+                    if VERBOSE: print("w{}: Work processed image {} ".format(worker_num, im_id))
                     
                         
             # still update prev_time and count even if image wasn't processed
