@@ -199,6 +199,105 @@ def query_handler(host,
     print("w{}: Query thread exited.".format(worker_num))                
             
 
+def consistency_function(p_message_queue,
+                         p_consistency_results,
+                         p_last_balanced,
+                         consistency_rate = 2, # queries per second
+                         query_timeout = 5,
+                         timeout = 20,
+                         VERBOSE = False,
+                         worker_num = 0):
+    """
+    Systematically sends queries in on each image ID to all workers, and uses the 
+    most common returned value to update own database. 
+    """
+    print("w{}: Consistency thread started.".format(worker_num))
+    
+    # path to worker's database
+    data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
+    
+    # wait until there are data results in database
+    next_im_id = -1
+    while next_im_id < 5:
+        time.sleep(0.1)
+        with p_last_balanced.get_lock():
+            next_im_id = p_last_balanced.value
+    
+    prev_time = time.time()
+    active_queries = {}
+    
+    while True: 
+        if time.time() > prev_time + 1/consistency_rate:
+            
+            # cycle backwards through im_ids
+            next_im_id -= 1
+            if next_im_id < 0:
+                with p_last_balanced.get_lock():
+                    next_im_id = p_last_balanced.value
+            # add query to dict of active queries
+            active_queries[next_im_id] = {"time_in": time.time(),
+                                             "vals": [get_im_data(data_file,next_im_id)[0]]}
+            # forward consistency query to all other workers via message queue
+            # the True indicates that this is an internal request
+            message = ("query_request", (next_im_id,worker_num,True))
+            p_message_queue.put(message)
+            #if VERBOSE: print("w{}: Consistency query for im {} requested.".format(worker_num,next_im_id))
+        
+            # parse results from consistency results queue
+            while True:
+                try:
+                    (query_data,query_im_id) = p_consistency_results.get(timeout = 0) 
+                    prev_time = time.time()
+                    # add if still active
+                    if query_im_id in active_queries.keys():
+                        active_queries[query_im_id]["vals"].append(query_data)  
+                    if VERBOSE: print("w{}: Parsed consistency response for im {}.".format(worker_num,query_im_id))
+                except queue.Empty:
+                    break
+                
+            # cycle through active queries and return result for all that have timed out
+            timed_out = []
+            for id_tag in active_queries:
+                prev_time = time.time()
+                query = active_queries[id_tag]
+                if query['time_in'] + query_timeout < time.time():
+                    # get most common val by comparing unique hashes
+                    hash_dict = {}
+                    for data in query["vals"]:
+                        if type(data) == np.ndarray: # make sure None doesn't become the most common value
+                            data_hash = hash(data.tostring())
+                            if data_hash in hash_dict.keys():
+                                hash_dict[data_hash]["count"] +=1
+                            else:
+                                hash_dict[data_hash] = {}
+                                hash_dict[data_hash]["count"] = 1
+                                hash_dict[data_hash]["data"] = data
+                    
+                    # count hashes
+                    most_common_data = None
+                    count = 0
+                    for data_hash in hash_dict:
+                        if hash_dict[data_hash]["count"] > count:
+                            count = hash_dict[data_hash]["count"]
+                            most_common_data = hash_dict[data_hash]["data"]
+            
+                    # lastly, compare to own data and see if count is greater than
+                    # num_validators on previous data. If not, send own value and 
+                    # don't update own value
+                    (own_data, own_num_validators) = get_im_data(data_file,id_tag)
+                    if own_num_validators < count:
+                        update_data(data_file,count,most_common_data)
+                        if VERBOSE: print("w{}: Consistency update on im {} with {} validators.".format(worker_num,id_tag,count))
+                        
+                    timed_out.append(id_tag)
+              
+            # remove all handled requests
+            timed_out.reverse()
+            for tag in timed_out:
+                del active_queries[tag]
+    
+    
+
 def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worker_num = 0):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
@@ -235,7 +334,16 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worke
     print ("w{}: Message sender thread closed socket.".format(worker_num))
 
 
-def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer,p_query_requests,p_query_results, timeout = 20, VERBOSE = False,worker_num = 0):
+def receive_messages(hosts,
+                     ports,
+                     p_lb_queue,
+                     p_audit_buffer,
+                     p_query_requests,
+                     p_query_results, 
+                     p_consistency_results,
+                     timeout = 20, 
+                     VERBOSE = False,
+                     worker_num = 0):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
@@ -286,8 +394,10 @@ def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer,p_query_requests,p_q
                 if data[2] == worker_num:
                     p_query_results.put(data[0:2]) # since destination worker not necessary
                 
-#            elif label == "consistency_result":
-#                p_consistency_results.put(data)
+            elif label == "consistency_result":
+                # data = (queried_data, query_im_id,destination_worker)
+                if data[2] == worker_num:
+                    p_consistency_results.put(data[0:2]) # since destination worker not necessary
             else:
                 pass
         
