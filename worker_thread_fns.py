@@ -67,7 +67,7 @@ def query_handler(host,
                   VERBOSE = True,
                   worker_num = 0):
     """
-    Has three main functions in main loop:
+    Has four main steps in main loop:
         1.  Receives query requests via UDP port specified by host and port, and
             forwards the requests to all other workers via message queue
         host - string
@@ -180,9 +180,9 @@ def query_handler(host,
                 # don't update own value
                 (own_data, own_num_validators) = get_im_data(data_file,id_tag)
                 if own_num_validators >= count:
-                    message = ("query_output", own_data)
+                    message = ("query_output", (id_tag,own_data))
                 else:
-                    message = ("query_output", most_common_data)
+                    message = ("query_output", (id_tag,most_common_data))
                     # update database
                     update_data(data_file,count,most_common_data)
                 p_message_queue.put(message)

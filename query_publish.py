@@ -19,7 +19,7 @@ import _pickle as pickle
 import numpy as np
 
 
-def publish_queries(rate,pub_socket,im_sub_socket,worker_hosts,worker_ports):
+def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts,worker_ports):
     """ publishes a request for information on a given image at a random rate
     rate - float -  average rate of queries (0.5) = 0.5 queries per second
     socket - socket to publish queries on 
@@ -43,6 +43,20 @@ def publish_queries(rate,pub_socket,im_sub_socket,worker_hosts,worker_ports):
             all_im_ids.append(name)
         except zmq.ZMQError:
             pass
+        
+        try:
+            # receive an im_id and add it to list of valid im ids
+            temp = output_sub_socket.recv_pyobj(zmq.NOBLOCK)
+            (label,data) = pickle.loads(temp)
+            if label == "query_output":
+                # data is numpy array
+                if type(data[1]) == np.ndarray: 
+                    print("{} objects detected in image {}.".format(len(data[1]),data[0]))
+                else:
+                    print("No results yet for image {}.".format(data[0]))
+        except zmq.ZMQError:
+            pass
+        
         
         # send a new query if sufficient time has passed
         if time.time() > next_time and len(all_im_ids) > 0:
@@ -88,6 +102,13 @@ if __name__ == '__main__':
     im_sock.connect("tcp://{}:{}".format(im_host,im_port))
     im_sock.subscribe(b'') # subscribe to all topics on this port (only images)
     
+    # create socket to listen for query outputs
+    output_context = zmq.Context()
+    out_sock = output_context.socket(zmq.SUB)
+    for i in range(num_workers):
+        out_sock.connect("tcp://{}:{}".format("127.0.0.1",5200 + i))
+    out_sock.subscribe(b'') # subscribe to all topics on this port (only images)
+    
     # get list of all worker ports
     worker_hosts = []
     worker_ports = []
@@ -102,4 +123,4 @@ if __name__ == '__main__':
     qr_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     print("Opened query publisher socket")
     
-    publish_queries(rate,qr_sock,im_sock,worker_hosts,worker_ports)
+    publish_queries(rate,qr_sock,im_sock,out_sock,worker_hosts,worker_ports)
