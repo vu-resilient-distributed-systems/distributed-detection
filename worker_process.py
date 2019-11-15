@@ -31,6 +31,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     p_audit_buffer = queue.Queue() # for storing audit requests
     p_query_requests = queue.Queue() # for storing query requests
     p_query_results = queue.Queue() # for storing query results
+    p_ALLOW_QUERIES_semaphore = threading.Semaphore(0)
     
     # use multiprocessing Value for thread-shared values
     p_average_time = mp.Value('f',0.5+0.01*worker_num, lock = True)
@@ -119,6 +120,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                               p_average_time,
                               p_num_tasks,
                               p_last_balanced,
+                              p_ALLOW_QUERIES_semaphore,
                               timeout, 
                               True,
                               worker_num))
@@ -129,6 +131,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                 p_message_queue,
                                 p_query_requests,
                                 p_query_results,
+                                p_ALLOW_QUERIES_semaphore,
                                 query_timeout, 
                                 timeout,
                                 True,

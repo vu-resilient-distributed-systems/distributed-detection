@@ -62,6 +62,7 @@ def query_handler(host,
                   p_message_queue,
                   p_query_requests,
                   p_query_results,
+                  p_ALLOW_QUERIES_semaphore,
                   query_timeout = 5,
                   timeout = 20,
                   VERBOSE = True,
@@ -92,7 +93,7 @@ def query_handler(host,
     sock.bind((host, port))
     sock.setblocking(0) 
     print("w{}: Query thread opened receiver socket.".format(worker_num))
-    time.sleep(20) # to ensure some data is written
+    p_ALLOW_QUERIES_semaphore.acquire() # to ensure some data is written
     
     active_queries = {}
     
@@ -461,6 +462,7 @@ def work_function(p_image_queue,
                   p_average_time,
                   p_num_tasks,
                   p_last_balanced,
+                  p_ALLOW_QUERIES_semaphore,
                   timeout = 20, 
                   VERBOSE = True,
                   worker_num = 0):
@@ -531,7 +533,6 @@ def work_function(p_image_queue,
                 
             if AUDIT or TASK:
                 if VERBOSE: print("w{} work began processing image {}.".format(worker_num, im_id))
-                count += 1
                 
                 ############## DO WORK ############## 
                 work_start_time = time.time()
@@ -556,6 +557,10 @@ def work_function(p_image_queue,
                     data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
                     write_data_csv(data_file,result,im_id)
                     
+                    # let query process know it can read CSV now
+                    if count == 0:
+                        p_ALLOW_QUERIES_semaphore.release()
+
                     # compute metrics
                     latency = work_end_time - im_time_received
                     proc_time = work_end_time - work_start_time
@@ -571,9 +576,10 @@ def work_function(p_image_queue,
                     if VERBOSE: print("w{}: Work metrics on image {} sent to message queue".format(worker_num, im_id))
                     
                         
-            else:
-                # still update prev_time if image was not a task or an audit
-                prev_time = time.time()
+            # still update prev_time and count even if image wasn't processed
+            prev_time = time.time()
+            count += 1
+            
         # no images in p_image_queue    
         except queue.Empty:
             time.sleep(0.1)
