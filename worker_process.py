@@ -39,9 +39,10 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     p_num_tasks = mp.Value('i',0,lock = True)
     p_last_balanced = mp.Value('i',-1,lock = True)
     
-    lb_timeout = 1
+    lb_timeout = 2
     query_timeout = 5
-    consistency_rate = 0.5 # queries per second
+    consistency_rate = 0.25 # queries per second
+    heart_rate = 0.05
     
     # get sender port
     host = hosts[worker_num]
@@ -77,7 +78,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                      port,
                                      p_message_queue,
                                      timeout,
-                                     VERBOSE,
+                                     False,
                                      worker_num))
     
     # create message receiver thread
@@ -88,6 +89,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                     p_audit_buffer,
                                     p_query_requests,
                                     p_query_results,
+                                    p_consistency_results,
                                     timeout,
                                     VERBOSE,
                                     worker_num))
@@ -104,7 +106,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                      audit_rate,
                                      timeout,
                                      lb_timeout, 
-                                     VERBOSE,
+                                     True,
                                      len(ports)+1, # total num workers
                                      worker_num))
     
@@ -112,7 +114,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                    (p_average_time,
                                     p_message_queue,
                                     p_num_tasks,
-                                    0.05,
+                                    heart_rate,
                                     timeout,
                                     VERBOSE,
                                     worker_num))
@@ -126,7 +128,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                               p_num_tasks,
                               p_last_balanced,
                               timeout, 
-                              True,
+                              VERBOSE,
                               worker_num))
     
     t_query = threading.Thread(target = query_handler, args = 

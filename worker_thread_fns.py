@@ -375,7 +375,7 @@ def receive_messages(hosts,
             
             # deal with different types of messages (different label field)
             if label == "heartbeat":
-                 # (time heartbeat generated, this workers wait time, worker_num)
+                # (time heartbeat generated, workers wait time, worker_num)
                 p_lb_queue.put((data[0],data[1]))
             
             # deal with audit requests
@@ -398,6 +398,7 @@ def receive_messages(hosts,
                 # data = (queried_data, query_im_id,destination_worker)
                 if data[2] == worker_num:
                     p_consistency_results.put(data[0:2]) # since destination worker not necessary
+            
             else:
                 pass
         
