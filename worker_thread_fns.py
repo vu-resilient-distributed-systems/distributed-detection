@@ -62,7 +62,6 @@ def query_handler(host,
                   p_message_queue,
                   p_query_requests,
                   p_query_results,
-                  p_ALLOW_QUERIES_semaphore,
                   query_timeout = 5,
                   timeout = 20,
                   VERBOSE = True,
@@ -93,7 +92,6 @@ def query_handler(host,
     sock.bind((host, port))
     sock.setblocking(0) 
     print("w{}: Query thread opened receiver socket.".format(worker_num))
-    p_ALLOW_QUERIES_semaphore.acquire() # to ensure some data is written
     
     active_queries = {}
     
@@ -113,6 +111,7 @@ def query_handler(host,
             # the False indicates that this is not an internal request
             message = ("query_request", (queried_im_id,worker_num,False))
             p_message_queue.put(message)
+            if VERBOSE: print("w{}: Requested query for im {}.".format(worker_num,queried_im_id))
         except BlockingIOError:# socket.timeout:
             pass
     
@@ -462,7 +461,6 @@ def work_function(p_image_queue,
                   p_average_time,
                   p_num_tasks,
                   p_last_balanced,
-                  p_ALLOW_QUERIES_semaphore,
                   timeout = 20, 
                   VERBOSE = True,
                   worker_num = 0):
@@ -556,10 +554,6 @@ def work_function(p_image_queue,
                     # write results to database
                     data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
                     write_data_csv(data_file,result,im_id)
-                    
-                    # let query process know it can read CSV now
-                    if count == 0:
-                        p_ALLOW_QUERIES_semaphore.release()
 
                     # compute metrics
                     latency = work_end_time - im_time_received

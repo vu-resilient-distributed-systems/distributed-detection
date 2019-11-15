@@ -54,8 +54,8 @@ def publish_images(imlist,tpi,socket):
         
         prev_time = time.time()
         socket.send_pyobj(im_pickle)
-        i = i + 1
         print("Sent image {}".format(i))
+        i = i + 1
     
     
 if __name__ == '__main__':
