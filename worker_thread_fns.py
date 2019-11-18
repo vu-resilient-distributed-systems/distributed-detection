@@ -215,6 +215,7 @@ def consistency_function(p_message_queue,
                          p_consistency_results,
                          p_last_balanced,
                          p_database_lock,
+                         p_continue_consistency,
                          consistency_rate = 2, # queries per second
                          query_timeout = 5,
                          timeout = 20,
@@ -237,9 +238,13 @@ def consistency_function(p_message_queue,
             next_im_id = p_last_balanced.value
     
     prev_time = time.time()
-    active_queries = {}
+    active_queries = {}    
     
-    while True: 
+    with p_continue_consistency.get_lock():
+        continue_val = p_continue_consistency.value
+        
+    while continue_val:
+        
         if time.time() > prev_time + 1/consistency_rate:
             
             # cycle backwards through im_ids
@@ -314,6 +319,12 @@ def consistency_function(p_message_queue,
             timed_out.reverse()
             for tag in timed_out:
                 del active_queries[tag]
+                
+            # determine whether to continue using shared variable with heartbeat thread
+            with p_continue_consistency.get_lock():
+                continue_val = p_continue_consistency.value
+            
+    print("{}: Consistency thread exited.".format(worker_num))
     
     
 
@@ -430,7 +441,14 @@ def receive_messages(hosts,
     print ("w{}: Message receiver thread closed socket.".format(worker_num))
 
 
-def heartbeat(p_average_time,p_message_queue,p_num_tasks,interval = 0.5,timeout = 20, VERBOSE = False, worker_num = 0):
+def heartbeat(p_average_time,
+              p_message_queue,
+              p_num_tasks,
+              p_continue_consistency,
+              interval = 0.5,
+              timeout = 20, 
+              VERBOSE = False,
+              worker_num = 0):
     """
     Sends out as a heartbeat the average wait time at regular intervals
     p_average_time - shared variable for average time,
@@ -471,6 +489,10 @@ def heartbeat(p_average_time,p_message_queue,p_num_tasks,interval = 0.5,timeout 
         
         # a bit imprecise since the other operations in the loop do take some time
         time.sleep(interval)
+    
+    # tell consistency thread to exit
+    with p_continue_consistency.get_lock():
+         p_continue_consistency.value = False
     
     print("w{}: Heartbeat thread exited.".format(worker_num))
     
