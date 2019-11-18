@@ -694,11 +694,12 @@ def work_function(p_image_queue,
                 
                 ############## DO WORK ############## 
                 work_start_time = time.time()
-#                result, _ = model.detect(image).data.numpy()
-                
-                # dummy work
-                result = np.random.rand(10,8)
-                time.sleep(3)
+                dummy_work = True
+                if dummy_work:
+                    result = np.random.rand(10,8)
+                    time.sleep(max((0,np.random.normal(3,1))))            
+                else:
+                    result, _ = model.detect(image).data.numpy()
                 
                 work_end_time = time.time()
                 prev_time = time.time()
