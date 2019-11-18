@@ -8,11 +8,12 @@ This file contains the function that creates a worker process
 import threading
 import multiprocessing as mp
 import queue
-import random
+import numpy as np
 import os
 
 from worker_thread_fns import ( receive_images,send_messages,receive_messages,
-                               load_balance,heartbeat,work_function, query_handler )
+                               load_balance,heartbeat,work_function, query_handler,
+                               consistency_function, write_data_csv)
 
 
 def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
@@ -31,15 +32,21 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     p_audit_buffer = queue.Queue() # for storing audit requests
     p_query_requests = queue.Queue() # for storing query requests
     p_query_results = queue.Queue() # for storing query results
-    p_ALLOW_QUERIES_semaphore = threading.Semaphore(0)
+    p_consistency_results = queue.Queue() # for storing consistency query results
     
     # use multiprocessing Value for thread-shared values
     p_average_time = mp.Value('f',0.5+0.01*worker_num, lock = True)
     p_num_tasks = mp.Value('i',0,lock = True)
     p_last_balanced = mp.Value('i',-1,lock = True)
     
-    lb_timeout = 1
+    p_database_lock = threading.Lock()
+    p_continue_consistency = mp.Value('b',True,lock = True)
+    
+    # changeable worker parameters
+    lb_timeout = 2
     query_timeout = 5
+    consistency_rate = 0.5 # queries per second
+    heart_rate = 0.05
     
     # get sender port
     host = hosts[worker_num]
@@ -52,9 +59,12 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     hosts.remove(host)
     ports.remove(port)
     
-    # overwrite datafile
-    with open(os.path.join('databases','worker_{}_database.csv'.format(worker_num)),mode = 'w') as f:
+    # overwrite datafile and write one dummy line
+    data_path = os.path.join('databases','worker_{}_database.csv'.format(worker_num))
+    with open(data_path,mode = 'w') as f:
         pass
+    write_data_csv(data_path,np.zeros([2,8])-1,-1,-1)
+
     
     # create image receiver thread
     thread_im_rec = threading.Thread(target = receive_images, args = 
@@ -83,6 +93,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                     p_audit_buffer,
                                     p_query_requests,
                                     p_query_results,
+                                    p_consistency_results,
                                     timeout,
                                     VERBOSE,
                                     worker_num))
@@ -99,7 +110,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                      audit_rate,
                                      timeout,
                                      lb_timeout, 
-                                     True,
+                                     VERBOSE,
                                      len(ports)+1, # total num workers
                                      worker_num))
     
@@ -107,7 +118,8 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                    (p_average_time,
                                     p_message_queue,
                                     p_num_tasks,
-                                    0.05,
+                                    p_continue_consistency,
+                                    heart_rate,
                                     timeout,
                                     VERBOSE,
                                     worker_num))
@@ -120,7 +132,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                               p_average_time,
                               p_num_tasks,
                               p_last_balanced,
-                              p_ALLOW_QUERIES_semaphore,
+                              p_database_lock,
                               timeout, 
                               True,
                               worker_num))
@@ -131,11 +143,23 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                 p_message_queue,
                                 p_query_requests,
                                 p_query_results,
-                                p_ALLOW_QUERIES_semaphore,
+                                p_database_lock,
                                 query_timeout, 
                                 timeout,
-                                True,
+                                VERBOSE,
                                 worker_num))
+    
+    t_consistency = threading.Thread(target = consistency_function, args = 
+                                     (p_message_queue,
+                                     p_consistency_results,
+                                     p_last_balanced,
+                                     p_database_lock,
+                                     p_continue_consistency,
+                                     consistency_rate, # queries per second
+                                     query_timeout,
+                                     timeout,
+                                     True,
+                                     worker_num))
                                     
     
     # start all threads
@@ -146,6 +170,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     t_heartbeat.start()
     t_work.start()
     t_query.start()
+    t_consistency.start()
     
     # wait for all threads to terminate
     thread_im_rec.join()
@@ -155,7 +180,8 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     t_mes_send.join()
     t_heartbeat.join()
     t_query.join()
-
+    t_consistency.join()
+    
 if __name__ == "__main__":
     # tester code for the worker processes
     
