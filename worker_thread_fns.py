@@ -8,18 +8,20 @@ process
 """
 
 import zmq
+import socket
 import random
 import time
 import queue
-from PIL import Image
 import _pickle as pickle
 import multiprocessing as mp
 import threading
 import numpy as np
+import os
+import csv
 
 from simple_yolo.yolo_detector import Darknet_Detector
 
-def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True,num = 0):
+def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6200, timeout = 20, VERBOSE = True,worker_num = 0):
     """
     Creates a ZMQ socket and listens on specified port, receiving and writing to
     shared image queue the received images
@@ -35,7 +37,7 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
     sock.connect("tcp://{}:{}".format(host, port))
     sock.subscribe(b'') # subscribe to all topics on this port (only images)
     
-    print ("w{}: Image receiver thread connected to socket.".format(num))
+    print ("w{}: Image receiver thread connected to socket.".format(worker_num))
     
     # main receiving loop
     prev_time = time.time()
@@ -46,14 +48,285 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
             p_image_queue.put((name,im,time.time())) 
             p_new_im_id_queue.put(name)
             prev_time = time.time()
-            if VERBOSE: print("w{}: Image receiver thread received image {} at {}".format(num,name,time.ctime(prev_time)))
+            if VERBOSE: print("w{}: Image receiver thread received image {} at {}".format(worker_num,name,time.ctime(prev_time)))
         except zmq.ZMQError:
             time.sleep(0.1)
             pass
         
     sock.close()
-    print ("w{}: Image receiver thread closed socket.".format(num))
+    print ("w{}: Image receiver thread closed socket.".format(worker_num))
 
+
+def query_handler(host,
+                  port,
+                  p_message_queue,
+                  p_query_requests,
+                  p_query_results,
+                  p_database_lock,
+                  query_timeout = 5,
+                  timeout = 20,
+                  VERBOSE = True,
+                  worker_num = 0):
+    """
+    Has four main steps in main loop:
+        1.  Receives query requests via UDP port specified by host and port, and
+            forwards the requests to all other workers via message queue
+        host - string
+        port - int
+        2.  Upon receiving a query request forwarded from another worker (in p_query_request)
+            accesses own database and returns the requested data via message queue
+        p_query_requests - thread-shared queue object
+        p_message_queue - thread-shared queue object
+        3. Parses all return values from p_query_result
+        p_query_results - thread-shared queue object
+        4. after timeout period, returns the most common value to the client via message queue
+           i.e. it is assumed client is subscribed to "query_output" from this worker's sender port
+           Also updates own database with this most common value
+        timeout - float - seconds
+    """
+    
+    # specify database file path
+    data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
+    
+    # open UDP socket to receive requests
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((host, port))
+    sock.setblocking(0) 
+    print("w{}: Query thread opened receiver socket.".format(worker_num))
+    
+    active_queries = {}
+    
+    prev_time = time.time()
+    while time.time() - prev_time < timeout:
+        # 1. receive new external queries
+        try:
+            # receive query
+            queried_im_id = int(sock.recv(1024).decode('utf-8'))
+            prev_time = time.time()
+            
+            # add query to dict of active queries
+            p_database_lock.acquire()
+            active_queries[queried_im_id] = {"time_in": prev_time,
+                                         "vals": [get_im_data(data_file,queried_im_id)[0]]}
+            p_database_lock.release()
+            
+            # forward query to all other workers via message queue
+            # the False indicates that this is not an internal request
+            message = ("query_request", (queried_im_id,worker_num,False))
+            p_message_queue.put(message)
+            if VERBOSE: print("w{}: Requested query for im {}.".format(worker_num,queried_im_id))
+        except BlockingIOError:# socket.timeout:
+            pass
+    
+        # 2. respond to all query requests
+        while True:
+            try:
+                # get request from queue - both consistency and external query
+                # requests are handled here, and INTERNAL indicates which type 
+                # this request is so it can be returned to the correct thread
+                (requested_im_id,request_worker_num,INTERNAL) = p_query_requests.get(timeout = 0)
+                prev_time = time.time()
+                
+                # helper function returns relevant numpy array and num_validators or None,0
+                p_database_lock.acquire()
+                data = get_im_data(data_file,requested_im_id)[0]
+                p_database_lock.release()
+                
+                # send data back via message queue
+                if INTERNAL:
+                    message = ("consistency_result",(data,requested_im_id,request_worker_num))
+                else:
+                    message = ("query_result",(data,requested_im_id,request_worker_num))
+                p_message_queue.put(message)  
+                if VERBOSE: print("w{}: Responded to query request im {} for worker {}.".format(worker_num,requested_im_id,request_worker_num))
+            except queue.Empty:
+                break
+            
+        # 3. parse query results
+        while True:
+            try:
+                (query_data,query_im_id) = p_query_results.get(timeout = 0) 
+                prev_time = time.time()
+                # add if still active
+                if query_im_id in active_queries.keys():
+                    active_queries[query_im_id]["vals"].append(query_data)  
+                if VERBOSE: print("w{}: Parsed query response for im {}.".format(worker_num,query_im_id))
+            except queue.Empty:
+                break
+               
+        # 4.cycle through active queries and return result for all that have timed out
+        timed_out = []
+        for id_tag in active_queries:
+            prev_time = time.time()
+            query = active_queries[id_tag]
+            if query['time_in'] + query_timeout < time.time():
+                # get most common val by comparing unique hashes
+                hash_dict = {}
+                for data in query["vals"]:
+                    if type(data) == np.ndarray: # make sure None doesn't become the most common value
+                        data_hash = hash(data.tostring())
+                        if data_hash in hash_dict.keys():
+                            hash_dict[data_hash]["count"] +=1
+                        else:
+                            hash_dict[data_hash] = {}
+                            hash_dict[data_hash]["count"] = 1
+                            hash_dict[data_hash]["data"] = data
+                
+                # count hashes
+                most_common_data = None
+                count = 0
+                for data_hash in hash_dict:
+                    if hash_dict[data_hash]["count"] > count:
+                        count = hash_dict[data_hash]["count"]
+                        most_common_data = hash_dict[data_hash]["data"]
+        
+                # lastly, compare to own data and see if count is greater than
+                # num_validators on previous data. If not, send own value and 
+                # don't update own value
+                p_database_lock.acquire()
+                (own_data, own_num_validators) = get_im_data(data_file,id_tag)
+   
+                
+                if own_num_validators >= count:
+                    message = ("query_output", (id_tag,own_data))
+                else:
+                    message = ("query_output", (id_tag,most_common_data))
+                    # update database
+                    update_data(data_file,count,most_common_data)
+                    
+                p_database_lock.release() 
+                
+                # output query overall result
+                p_message_queue.put(message)
+                if VERBOSE: print("w{}: Output query result for im {}.".format(worker_num,id_tag))
+                timed_out.append(id_tag)
+          
+        # remove all handled requests
+        timed_out.reverse()
+        for tag in timed_out:
+            del active_queries[tag]
+                
+    # end of main while loop
+    sock.close()
+    print("w{}: Query thread exited.".format(worker_num))                
+            
+
+def consistency_function(p_message_queue,
+                         p_consistency_results,
+                         p_last_balanced,
+                         p_database_lock,
+                         p_continue_consistency,
+                         consistency_rate = 2, # queries per second
+                         query_timeout = 5,
+                         timeout = 20,
+                         VERBOSE = False,
+                         worker_num = 0):
+    """
+    Systematically sends queries in on each image ID to all workers, and uses the 
+    most common returned value to update own database. 
+    """
+    print("w{}: Consistency thread started.".format(worker_num))
+    
+    # path to worker's database
+    data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
+    
+    # wait until there are data results in database
+    next_im_id = -1
+    while next_im_id < 5:
+        time.sleep(0.1)
+        with p_last_balanced.get_lock():
+            next_im_id = p_last_balanced.value
+    
+    prev_time = time.time()
+    active_queries = {}    
+    
+    with p_continue_consistency.get_lock():
+        continue_val = p_continue_consistency.value
+        
+    while continue_val:
+        
+        if time.time() > prev_time + 1/consistency_rate:
+            
+            # cycle backwards through im_ids
+            next_im_id -= 1
+            if next_im_id < 0:
+                with p_last_balanced.get_lock():
+                    next_im_id = p_last_balanced.value
+            # add query to dict of active queries
+            p_database_lock.acquire()
+            active_queries[next_im_id] = {"time_in": time.time(),
+                                             "vals": [get_im_data(data_file,next_im_id)[0]]}
+            p_database_lock.release()
+            
+            # forward consistency query to all other workers via message queue
+            # the True indicates that this is an internal request
+            message = ("query_request", (next_im_id,worker_num,True))
+            p_message_queue.put(message)
+            #if VERBOSE: print("w{}: Consistency query for im {} requested.".format(worker_num,next_im_id))
+        
+            # parse results from consistency results queue
+            while True:
+                try:
+                    (query_data,query_im_id) = p_consistency_results.get(timeout = 0) 
+                    prev_time = time.time()
+                    # add if still active
+                    if query_im_id in active_queries.keys():
+                        active_queries[query_im_id]["vals"].append(query_data)  
+                    #if VERBOSE: print("w{}: Parsed consistency response for im {}.".format(worker_num,query_im_id))
+                except queue.Empty:
+                    break
+                
+            # cycle through active queries and return result for all that have timed out
+            timed_out = []
+            for id_tag in active_queries:
+                prev_time = time.time()
+                query = active_queries[id_tag]
+                if query['time_in'] + query_timeout < time.time():
+                    # get most common val by comparing unique hashes
+                    hash_dict = {}
+                    for data in query["vals"]:
+                        if type(data) == np.ndarray: # make sure None doesn't become the most common value
+                            data_hash = hash(data.tostring())
+                            if data_hash in hash_dict.keys():
+                                hash_dict[data_hash]["count"] +=1
+                            else:
+                                hash_dict[data_hash] = {}
+                                hash_dict[data_hash]["count"] = 1
+                                hash_dict[data_hash]["data"] = data
+                    
+                    # count hashes
+                    most_common_data = None
+                    count = 0
+                    for data_hash in hash_dict:
+                        if hash_dict[data_hash]["count"] > count:
+                            count = hash_dict[data_hash]["count"]
+                            most_common_data = hash_dict[data_hash]["data"]
+            
+                    # lastly, compare to own data and see if count is greater than
+                    # num_validators on previous data. If not, send own value and 
+                    # don't update own value
+                    p_database_lock.acquire()
+                    (own_data, own_num_validators) = get_im_data(data_file,id_tag)
+                    if own_num_validators < count:
+                        assert len(most_common_data[0]) > 0, print("most_common_data isn't valid")
+                        update_data(data_file,count,most_common_data)
+                        if VERBOSE: print("w{}: Consistency update on im {} with {} validators.".format(worker_num,id_tag,count))
+                    
+                    p_database_lock.release()
+                    timed_out.append(id_tag)
+              
+            # remove all handled requests
+            timed_out.reverse()
+            for tag in timed_out:
+                del active_queries[tag]
+                
+            # determine whether to continue using shared variable with heartbeat thread
+            with p_continue_consistency.get_lock():
+                continue_val = p_continue_consistency.value
+            
+    print("{}: Consistency thread exited.".format(worker_num))
+    
+    
 
 def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worker_num = 0):
     """
@@ -91,7 +364,16 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worke
     print ("w{}: Message sender thread closed socket.".format(worker_num))
 
 
-def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer, timeout = 20, VERBOSE = False,worker_num = 0):
+def receive_messages(hosts,
+                     ports,
+                     p_lb_queue,
+                     p_audit_buffer,
+                     p_query_requests,
+                     p_query_results, 
+                     p_consistency_results,
+                     timeout = 20, 
+                     VERBOSE = False,
+                     worker_num = 0):
     """
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
@@ -123,8 +405,8 @@ def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer, timeout = 20, VERBO
             
             # deal with different types of messages (different label field)
             if label == "heartbeat":
-                 # (time heartbeat generated, this workers wait time, worker_num)
-                p_lb_queue.put((data[0],data[1]))
+                # (time heartbeat generated, workers wait time, worker_num)
+                p_lb_queue.put(data)
             
             # deal with audit requests
             elif label == "audit_request":
@@ -132,9 +414,23 @@ def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer, timeout = 20, VERBO
                 (im_id,auditors) = data
                 if worker_num in auditors:
                     p_audit_buffer.put(im_id)
+                    
+            elif label == "query_request":
+                # data = (queried_im_id,worker_num,INTERNAL)
+                p_query_requests.put(data)
+                
+            elif label == "query_result":
+                # data = (queried_data, query_im_id,destination_worker)
+                if data[2] == worker_num:
+                    p_query_results.put(data[0:2]) # since destination worker not necessary
+                
+            elif label == "consistency_result":
+                # data = (queried_data, query_im_id,destination_worker)
+                if data[2] == worker_num:
+                    p_consistency_results.put(data[0:2]) # since destination worker not necessary
+            
             else:
                 pass
-
         
         except zmq.ZMQError:
             time.sleep(0.1)
@@ -145,7 +441,14 @@ def receive_messages(hosts,ports,p_lb_queue, p_audit_buffer, timeout = 20, VERBO
     print ("w{}: Message receiver thread closed socket.".format(worker_num))
 
 
-def heartbeat(p_average_time,p_message_queue,p_num_tasks,interval = 0.5,timeout = 20, VERBOSE = False, worker_num = 0):
+def heartbeat(p_average_time,
+              p_message_queue,
+              p_num_tasks,
+              p_continue_consistency,
+              interval = 0.5,
+              timeout = 20, 
+              VERBOSE = False,
+              worker_num = 0):
     """
     Sends out as a heartbeat the average wait time at regular intervals
     p_average_time - shared variable for average time,
@@ -187,6 +490,10 @@ def heartbeat(p_average_time,p_message_queue,p_num_tasks,interval = 0.5,timeout 
         # a bit imprecise since the other operations in the loop do take some time
         time.sleep(interval)
     
+    # tell consistency thread to exit
+    with p_continue_consistency.get_lock():
+         p_continue_consistency.value = False
+    
     print("w{}: Heartbeat thread exited.".format(worker_num))
     
 
@@ -211,7 +518,7 @@ def load_balance(p_new_image_id_queue,
     the message was sent. Adds image to task list if worker has min wait time
     """
     prev_time = time.time()
-    all_received_times = []
+    all_received_times = {}
     
     while time.time() - prev_time < timeout:
         # if there is a new image id
@@ -223,8 +530,15 @@ def load_balance(p_new_image_id_queue,
             # get all pending times in p_lb_results and append to all_received_times
             while True:
                 try: 
+                    # (time heartbeat generated, workers wait time, worker_num)
                     message = p_lb_results.get(timeout = 0)
-                    all_received_times.append(message)
+                    # if message is more recent than previously stored
+                    # will throw error if there is no entry for that worker num yet
+                    try:
+                        if message[0] > all_received_times[message[2]][0]:
+                            all_received_times[message[2]] = (message[0],message[1])
+                    except KeyError:
+                            all_received_times[message[2]] = (message[0],message[1])
                 except queue.Empty:
                     break
 
@@ -232,13 +546,13 @@ def load_balance(p_new_image_id_queue,
             # also keep running track of min valid time
             min_time = np.inf
             deletions = []
-            for i in range(len(all_received_times)): 
+            for worker in all_received_times: 
                 # each item is of form (time_generated, wait time, worker_num)
-                (other_gen_time, other_wait_time) = all_received_times[i]
+                (other_gen_time, other_wait_time) = all_received_times[worker]
                 
                 # check if item is out of date
                 if other_gen_time + lb_timeout < time_received:
-                    deletions.append(i)
+                    deletions.append(worker)
                 else:
                     if other_wait_time < min_time:
                         min_time = other_wait_time
@@ -306,6 +620,7 @@ def work_function(p_image_queue,
                   p_average_time,
                   p_num_tasks,
                   p_last_balanced,
+                  p_database_lock,
                   timeout = 20, 
                   VERBOSE = True,
                   worker_num = 0):
@@ -375,16 +690,15 @@ def work_function(p_image_queue,
                 audit_list.remove(im_id)
                 
             if AUDIT or TASK:
-                if VERBOSE: print("w{} work began processing image {}.".format(worker_num, im_id))
-                count += 1
+                #if VERBOSE: print("w{} work began processing image {}.".format(worker_num, im_id))
                 
                 ############## DO WORK ############## 
                 work_start_time = time.time()
-#                result, _ = model.detect(image)
+#                result, _ = model.detect(image).data.numpy()
                 
                 # dummy work
-                result = np.zeros([10,10])
-                time.sleep(9)
+                result = np.random.rand(10,8)
+                time.sleep(3)
                 
                 work_end_time = time.time()
                 prev_time = time.time()
@@ -394,12 +708,15 @@ def work_function(p_image_queue,
                     # package message
                     message = ("audit_result",(worker_num,im_id,result))
                     p_message_queue.put(message)
-                    if VERBOSE: print("w{}: work audit results on image {} sent to message queue".format(worker_num, im_id))
+                    if VERBOSE: print("w{}: Work audit results on image {} sent to message queue".format(worker_num, im_id))
                 # if task, write results to database and report metrics to monitor process
                 if TASK:
                     # write results to database
-                    #TODO!!!
-                    
+                    data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
+                    p_database_lock.acquire()
+                    write_data_csv(data_file,result,im_id)
+                    p_database_lock.release()
+
                     # compute metrics
                     latency = work_end_time - im_time_received
                     proc_time = work_end_time - work_start_time
@@ -412,12 +729,13 @@ def work_function(p_image_queue,
                     # send latency, processing time and average processing time to monitor
                     message = ("task_result", (worker_num,im_id, proc_time,avg_time,latency,result))
                     p_message_queue.put(message)
-                    if VERBOSE: print("w{}: Work metrics on image {} sent to message queue".format(worker_num, im_id))
+                    if VERBOSE: print("w{}: Work processed image {} ".format(worker_num, im_id))
                     
                         
-            else:
-                # still update prev_time if image was not a task or an audit
-                prev_time = time.time()
+            # still update prev_time and count even if image wasn't processed
+            prev_time = time.time()
+            count += 1
+            
         # no images in p_image_queue    
         except queue.Empty:
             time.sleep(0.1)
@@ -425,9 +743,52 @@ def work_function(p_image_queue,
     print("w{}: Work thread exited. {} images processed".format(worker_num,count))
 
     
+def write_data_csv(file,data,im_id,num_validators=1):
+    """
+    Writes data in csv for, appending to file and labeling each row with im_id
+    """
+    with open(file, mode = 'a') as f:
+        for row in data:
+            f.write((str(im_id) + "," + str(num_validators)))
+            for val in row:
+                f.write(",")
+                f.write(str(val))
+            f.write("\n") 
+     
+def get_im_data(file,im_id):
+    data = np.genfromtxt(file,delimiter = ',')
+    # first row is im_id, second row is num_validators
+    if np.size(data) > 0: # check whether there is any data
+        out = data[np.where(data[:,0] == im_id)[0],:]
+        if len(out) == 0: # check wether im_id is present
+            return None, 0
+        else:
+            num_validators = out[0,1]
+            return out, num_validators
+    else:
+        return None, 0
+        
     
+def update_data(file,num_validators, updated_data):
+    """
+    Given one N x 10 arrray, replaces
+    """
+    data = np.genfromtxt(file,delimiter = ',')
+    im_id = updated_data[0,0]
+    # update number of validators
+    updated_data[:,1] = num_validators
+
+    old_data_removed = data[np.where(data[:,0] != im_id)[0],:]
+    new_data = np.concatenate((old_data_removed,updated_data),0)
     
-    
+    #overwrite data file
+    with open(file, mode = 'w') as f:
+        for row in new_data:
+            f.write(str(row[0]))
+            for val in row[1:]:
+                f.write(" , ")
+                f.write(str(val))
+            f.write("\n") 
     
     
 # tester code
@@ -495,7 +856,7 @@ if __name__ == "__main__":
         t_heartbeat.join()
         
     # Test 4 - Test wrk_function
-    if True:
+    if False:
         """
         set up a test in which images are received and added to new image queue
         load_balancer should add messages to send queue and sender should send them
