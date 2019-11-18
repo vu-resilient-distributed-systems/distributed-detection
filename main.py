@@ -14,7 +14,7 @@ import time
 import zmq
 import _pickle as pickle
 
-from worker_process import worker
+from worker_process import worker as worker_fn
 
 def monitor_receiver(hosts,
                              ports,
@@ -23,7 +23,7 @@ def monitor_receiver(hosts,
                              VERBOSE = False):
     """
     NEED COMMENTS HERE
-    """    
+    """  
     # open publisher socket
     context = zmq.Context()
     sock = context.socket(zmq.SUB)
@@ -62,6 +62,7 @@ if __name__ == "__main__":
     num_workers = 4
     timeout = 30
     VERBOSE = False
+    target_latency = 7
     
     hosts = []
     ports = []
@@ -73,22 +74,35 @@ if __name__ == "__main__":
     
     # define queue for storing results grabbed by monitor_receiver thread
     monitor_message_queue = queue.Queue()
-    t_monitor = threading.Thread(target = monitor_receiver, args = 
+    t_receiver = threading.Thread(target = monitor_receiver, args = 
                                  (hosts,
                                  ports,
                                  monitor_message_queue,
                                  timeout,
                                  VERBOSE,))
-    t_monitor.start()
+    t_receiver.start()
     
+
     # start processes initially
     worker_processes = []
     for i in range(num_workers):
-        p = mp.Process(target = worker, args = (hosts,ports,audit_rate,i,timeout,VERBOSE,))
+        p = mp.Process(target = worker_fn, args = (hosts,ports,audit_rate,i,timeout,VERBOSE,))
         p.start()
         worker_processes.append(p)
     print("All worker processes started")
     
+    
+    # define nested dictionary structure for storing metrics
+    performance = {}
+    for i in range(num_workers):
+        performance[i] = {}
+        for metric in ["wait_time","latency","awt","work_time"]:
+            performance[i][metric] = {
+                    "data":[],
+                    "time":[]}
+    audits = {}
+    
+    anomalies = np.zeros(num_workers)
     
     # main loop, in which processes will be monitored and restarted as necessary
     prev_time = time.time()
@@ -98,29 +112,124 @@ if __name__ == "__main__":
         while True:
             try: 
                 (label, payload) = monitor_message_queue.get(timeout = 0)
+                prev_time = time.time()
                 
-                if label == "heartbeat":
-                    pass
-                elif label == "audit_result":
-                    pass
-                elif label == "task_result":
-                    pass
-                
+                if label == "heartbeat": #(time gen, wait time, worker_num)
+                    worker = payload[2]
+                    performance[worker]["wait_time"]["data"].append(payload[1])
+                    performance[worker]["wait_time"]["time"].append(payload[0])
+                    
+                elif label == "audit_result": # (worker_num,im_id,result))
+                    im = payload[1]
+                    worker = payload[0]
+                    if im in audits.keys:
+                        audits[im][worker] = hash(payload[2].tostring())
+                    else:
+                        audits[im] = {
+                                worker:hash(payload[2].tostring())
+                                }
+                        
+                elif label == "task_result": # (worker_num,im_id, work_time,avg_time,latency,result,time) 
+                    worker = payload[0]
+                    im = payload[1]
+                    
+                    # store metrics
+                    performance[worker]["work_time"]["data"].append(payload[2])
+                    performance[worker]["work_time"]["time"].append(payload[6])
+                    performance[worker]["awt"]["data"].append(payload[3])
+                    performance[worker]["awt"]["time"].append(payload[6])
+                    performance[worker]["latency"]["data"].append(payload[4])
+                    performance[worker]["latency"]["time"].append(payload[6])
+
+                    # store hash for audits
+                    if im in audits.keys:
+                        audits[im][worker] = hash(payload[5].tostring())
+                    else:
+                        audits[im] = {
+                                worker:hash(payload[5].tostring())
+                                }  
+                        
+            # all messages dequeued
             except queue.Empty:
                 break
     
         # 2. Plot performance metrics
+        # TODO
         
         # 3. Deal with audit results
+        deletions = []
+        for im in audits:
+            if len(audits[im]) == 3:
+                deletions.append(im)
+                all_hashes = []
+                for worker in audits[im]:
+                    all_hashes.append(audits[im][worker])
+                # get most common hash
+                hash_dict = {}
+                for hash_val in all_hashes:
+                        if hash_val in hash_dict.keys():
+                            hash_dict[hash_val]["count"] +=1
+                        else:
+                            hash_dict[hash_val] = {}
+                            hash_dict[hash_val]["count"] = 1
+                            hash_dict[hash_val]["data"] = data
+                
+                # count hashes
+                most_common_hash = None
+                count = 0
+                for hash_val in hash_dict:
+                    if hash_dict[hash_val]["count"] > count:
+                        count = hash_dict[hash_val]["count"]
+                        most_common_hash = hash_dict[hash_val]["data"]
+                # record anomalous results
+                for worker_num in audits[im]:
+                    if audits[im][worker_num] != most_common_hash:
+                        anomalies[worker_num] += 1
+                        
+        # remove all finished audits from audit dict
+        for im in deletions:
+            del audits[im]
+            
+            
+        # 4. Check for unresponsive processes        
+        # check each process to make sure a heartbeat has been received within 2 x average work time
+        for worker_num in performance:
+            awt = performance[worker_num]["awt"][-1] # get most recent awt
+            last_heartbeat_time = performance[worker_num]["wait_time"]["time"]
+            
+            if last_heartbeat_time + 2*awt < time.time():
+                anomalies[worker_num] += 1
+                
+        # 5. for any process, if 3 anomalies have been recorded, restart it
+        for worker_num in anomalies:
+            if anomalies[worker_num] >= 3:
+                worker_processes[worker_num].kill()
+                
+                p = mp.Process(target = worker_fn, args = (hosts,ports,audit_rate,worker_num,timeout,VERBOSE,))
+                p.start()
+                worker_processes[worker_num] = p
+                print("System monitor restarted worker {} at {}.".format(worker_num, time.time()))
         
-        # 4. Deal with slow or unresponsive processes
         
-        # 5. Adjust audit request ratio to move towards target latency
-    
+        # 6. Adjust audit request ratio to move towards target latency
+        # get average latency across all workers
+        avg_latency = 0
+        for worker_num in performance:
+            avg_latency += performance[worker_num]["latency"]["data"][-1]
+        avg_latency = avg_latency / len(performance)
+        
+        # adjust audit ratio to reach target_latency
+        if avg_latency > target_latency:
+            with audit_rate.get_lock():
+                audit_rate.value = max(audit_rate.value * 0.99,0.01)
+        else:
+            with audit_rate.get_lock():
+                audit_rate.value = min(audit_rate.value * 0.95,1)
+            
     
     # finally, wait for all worker processes to close
     for p in worker_processes:
         p.join()
     print("All worker processes terminated")    
     
-    t_monitor.join()
+    t_receiver.join()

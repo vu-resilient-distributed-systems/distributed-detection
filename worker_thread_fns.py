@@ -728,7 +728,7 @@ def work_function(p_image_queue,
                         p_average_time.value = avg_time
                     
                     # send latency, processing time and average processing time to monitor
-                    message = ("task_result", (worker_num,im_id, proc_time,avg_time,latency,result))
+                    message = ("task_result", (worker_num,im_id, proc_time,avg_time,latency,result,time.time()))
                     p_message_queue.put(message)
                     if VERBOSE: print("w{}: Work processed image {} ".format(worker_num, im_id))
                     
