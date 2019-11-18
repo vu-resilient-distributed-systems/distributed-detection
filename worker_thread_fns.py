@@ -696,7 +696,9 @@ def work_function(p_image_queue,
                 work_start_time = time.time()
                 dummy_work = True
                 if dummy_work:
-                    result = np.random.rand(10,8)
+                    result = np.ones([10,8])
+                    if worker_num == 0:
+                        result = np.zeros([10,8])
                     time.sleep(max((0,np.random.normal(3,1))))            
                 else:
                     result, _ = model.detect(image).data.numpy()

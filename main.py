@@ -197,7 +197,7 @@ if __name__ == "__main__":
         # 4. Check for unresponsive processes        
         # check each process to make sure a heartbeat has been received within 2 x average work time
         for worker_num in performance:
-            if online[worker]:
+            if online[worker_num]:
                 awt = performance[worker_num]["awt"]['data'][-1] # get most recent awt
                 last_heartbeat_time = performance[worker_num]["wait_time"]["time"][-1]
                 
@@ -207,7 +207,7 @@ if __name__ == "__main__":
         # 5. for any process, if 3 anomalies have been recorded, restart it
         for worker_num in range(len(anomalies)):
             if anomalies[worker_num] >= 3:
-                worker_processes[worker_num].kill()
+                worker_processes[worker_num].terminate()
                 
                 p = mp.Process(target = worker_fn, args = (hosts,ports,audit_rate,worker_num,timeout,VERBOSE,))
                 p.start()
