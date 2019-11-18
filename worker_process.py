@@ -38,7 +38,11 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     p_average_time = mp.Value('f',0.5+0.01*worker_num, lock = True)
     p_num_tasks = mp.Value('i',0,lock = True)
     p_last_balanced = mp.Value('i',-1,lock = True)
+    p_database_lock = threading.Lock()
     
+    
+    
+    # changeable worker parameters
     lb_timeout = 2
     query_timeout = 5
     consistency_rate = 0.5 # queries per second
@@ -127,6 +131,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                               p_average_time,
                               p_num_tasks,
                               p_last_balanced,
+                              p_database_lock,
                               timeout, 
                               True,
                               worker_num))
@@ -137,6 +142,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                 p_message_queue,
                                 p_query_requests,
                                 p_query_results,
+                                p_database_lock,
                                 query_timeout, 
                                 timeout,
                                 VERBOSE,
@@ -146,6 +152,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
                                      (p_message_queue,
                                      p_consistency_results,
                                      p_last_balanced,
+                                     p_database_lock,
                                      consistency_rate, # queries per second
                                      query_timeout,
                                      timeout,

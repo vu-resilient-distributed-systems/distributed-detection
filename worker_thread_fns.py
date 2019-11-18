@@ -62,6 +62,7 @@ def query_handler(host,
                   p_message_queue,
                   p_query_requests,
                   p_query_results,
+                  p_database_lock,
                   query_timeout = 5,
                   timeout = 20,
                   VERBOSE = True,
@@ -104,8 +105,10 @@ def query_handler(host,
             prev_time = time.time()
             
             # add query to dict of active queries
+            p_database_lock.acquire()
             active_queries[queried_im_id] = {"time_in": prev_time,
-                                             "vals": [get_im_data(data_file,queried_im_id)[0]]}
+                                         "vals": [get_im_data(data_file,queried_im_id)[0]]}
+            p_database_lock.release()
             
             # forward query to all other workers via message queue
             # the False indicates that this is not an internal request
@@ -125,7 +128,9 @@ def query_handler(host,
                 prev_time = time.time()
                 
                 # helper function returns relevant numpy array and num_validators or None,0
+                p_database_lock.acquire()
                 data = get_im_data(data_file,requested_im_id)[0]
+                p_database_lock.release()
                 
                 # send data back via message queue
                 if INTERNAL:
@@ -178,13 +183,20 @@ def query_handler(host,
                 # lastly, compare to own data and see if count is greater than
                 # num_validators on previous data. If not, send own value and 
                 # don't update own value
+                p_database_lock.acquire()
                 (own_data, own_num_validators) = get_im_data(data_file,id_tag)
+   
+                
                 if own_num_validators >= count:
                     message = ("query_output", (id_tag,own_data))
                 else:
                     message = ("query_output", (id_tag,most_common_data))
                     # update database
                     update_data(data_file,count,most_common_data)
+                    
+                p_database_lock.release() 
+                
+                # output query overall result
                 p_message_queue.put(message)
                 if VERBOSE: print("w{}: Output query result for im {}.".format(worker_num,id_tag))
                 timed_out.append(id_tag)
@@ -202,6 +214,7 @@ def query_handler(host,
 def consistency_function(p_message_queue,
                          p_consistency_results,
                          p_last_balanced,
+                         p_database_lock,
                          consistency_rate = 2, # queries per second
                          query_timeout = 5,
                          timeout = 20,
@@ -235,8 +248,11 @@ def consistency_function(p_message_queue,
                 with p_last_balanced.get_lock():
                     next_im_id = p_last_balanced.value
             # add query to dict of active queries
+            p_database_lock.acquire()
             active_queries[next_im_id] = {"time_in": time.time(),
                                              "vals": [get_im_data(data_file,next_im_id)[0]]}
+            p_database_lock.release()
+            
             # forward consistency query to all other workers via message queue
             # the True indicates that this is an internal request
             message = ("query_request", (next_im_id,worker_num,True))
@@ -284,12 +300,14 @@ def consistency_function(p_message_queue,
                     # lastly, compare to own data and see if count is greater than
                     # num_validators on previous data. If not, send own value and 
                     # don't update own value
+                    p_database_lock.acquire()
                     (own_data, own_num_validators) = get_im_data(data_file,id_tag)
                     if own_num_validators < count:
                         assert len(most_common_data[0]) > 0, print("most_common_data isn't valid")
                         update_data(data_file,count,most_common_data)
                         if VERBOSE: print("w{}: Consistency update on im {} with {} validators.".format(worker_num,id_tag,count))
-                        
+                    
+                    p_database_lock.release()
                     timed_out.append(id_tag)
               
             # remove all handled requests
@@ -580,6 +598,7 @@ def work_function(p_image_queue,
                   p_average_time,
                   p_num_tasks,
                   p_last_balanced,
+                  p_database_lock,
                   timeout = 20, 
                   VERBOSE = True,
                   worker_num = 0):
@@ -672,7 +691,9 @@ def work_function(p_image_queue,
                 if TASK:
                     # write results to database
                     data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
+                    p_database_lock.acquire()
                     write_data_csv(data_file,result,im_id)
+                    p_database_lock.release()
 
                     # compute metrics
                     latency = work_end_time - im_time_received
