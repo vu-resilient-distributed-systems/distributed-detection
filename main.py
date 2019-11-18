@@ -102,9 +102,11 @@ if __name__ == "__main__":
                     "time":[]}
     audits = {}
     
+    online = np.zeros(num_workers)
     anomalies = np.zeros(num_workers)
     
     # main loop, in which processes will be monitored and restarted as necessary
+    time.sleep(10)
     prev_time = time.time()
     while time.time() < prev_time + timeout:
         
@@ -122,7 +124,7 @@ if __name__ == "__main__":
                 elif label == "audit_result": # (worker_num,im_id,result))
                     im = payload[1]
                     worker = payload[0]
-                    if im in audits.keys:
+                    if im in audits.keys():
                         audits[im][worker] = hash(payload[2].tostring())
                     else:
                         audits[im] = {
@@ -140,9 +142,10 @@ if __name__ == "__main__":
                     performance[worker]["awt"]["time"].append(payload[6])
                     performance[worker]["latency"]["data"].append(payload[4])
                     performance[worker]["latency"]["time"].append(payload[6])
-
+                    online[worker] = 1
+                    
                     # store hash for audits
-                    if im in audits.keys:
+                    if im in audits.keys():
                         audits[im][worker] = hash(payload[5].tostring())
                     else:
                         audits[im] = {
@@ -168,19 +171,18 @@ if __name__ == "__main__":
                 hash_dict = {}
                 for hash_val in all_hashes:
                         if hash_val in hash_dict.keys():
-                            hash_dict[hash_val]["count"] +=1
+                            hash_dict[hash_val] +=1
                         else:
                             hash_dict[hash_val] = {}
-                            hash_dict[hash_val]["count"] = 1
-                            hash_dict[hash_val]["data"] = data
+                            hash_dict[hash_val] = 1
                 
                 # count hashes
                 most_common_hash = None
                 count = 0
                 for hash_val in hash_dict:
-                    if hash_dict[hash_val]["count"] > count:
-                        count = hash_dict[hash_val]["count"]
-                        most_common_hash = hash_dict[hash_val]["data"]
+                    if hash_dict[hash_val] > count:
+                        count = hash_dict[hash_val]
+                        most_common_hash = hash_val
                 # record anomalous results
                 for worker_num in audits[im]:
                     if audits[im][worker_num] != most_common_hash:
@@ -194,14 +196,15 @@ if __name__ == "__main__":
         # 4. Check for unresponsive processes        
         # check each process to make sure a heartbeat has been received within 2 x average work time
         for worker_num in performance:
-            awt = performance[worker_num]["awt"][-1] # get most recent awt
-            last_heartbeat_time = performance[worker_num]["wait_time"]["time"]
-            
-            if last_heartbeat_time + 2*awt < time.time():
-                anomalies[worker_num] += 1
+            if online[worker]:
+                awt = performance[worker_num]["awt"]['data'][-1] # get most recent awt
+                last_heartbeat_time = performance[worker_num]["wait_time"]["time"][-1]
+                
+                if last_heartbeat_time + 2*awt < time.time():
+                    anomalies[worker_num] += 1
                 
         # 5. for any process, if 3 anomalies have been recorded, restart it
-        for worker_num in anomalies:
+        for worker_num in range(len(anomalies)):
             if anomalies[worker_num] >= 3:
                 worker_processes[worker_num].kill()
                 
@@ -215,8 +218,9 @@ if __name__ == "__main__":
         # get average latency across all workers
         avg_latency = 0
         for worker_num in performance:
-            avg_latency += performance[worker_num]["latency"]["data"][-1]
-        avg_latency = avg_latency / len(performance)
+            if online[worker]:
+                avg_latency += performance[worker_num]["latency"]["data"][-1]
+        avg_latency = avg_latency / sum(online)
         
         # adjust audit ratio to reach target_latency
         if avg_latency > target_latency:
@@ -225,7 +229,8 @@ if __name__ == "__main__":
         else:
             with audit_rate.get_lock():
                 audit_rate.value = min(audit_rate.value * 0.95,1)
-            
+                audit_val = audit_rate.value
+        print("Current latency: {}. Adjusted audit rate to {}".format(avg_latency,audit_val))   
     
     # finally, wait for all worker processes to close
     for p in worker_processes:
