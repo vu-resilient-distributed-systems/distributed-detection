@@ -108,6 +108,7 @@ if __name__ == "__main__":
     # main loop, in which processes will be monitored and restarted as necessary
     time.sleep(10)
     prev_time = time.time()
+    prev_latency_time = prev_time
     while time.time() < prev_time + timeout:
         
         # 1. If there are any messages in the monitor_message_queue, parse 
@@ -222,15 +223,18 @@ if __name__ == "__main__":
                 avg_latency += performance[worker_num]["latency"]["data"][-1]
         avg_latency = avg_latency / sum(online)
         
-        # adjust audit ratio to reach target_latency
-        if avg_latency > target_latency:
-            with audit_rate.get_lock():
-                audit_rate.value = max(audit_rate.value * 0.99,0.01)
-        else:
-            with audit_rate.get_lock():
-                audit_rate.value = min(audit_rate.value * 0.95,1)
-                audit_val = audit_rate.value
-        print("Current latency: {}. Adjusted audit rate to {}".format(avg_latency,audit_val))   
+        # adjust audit ratio to reach target_latency every 5 seconds
+        if time.time() > prev_latency_time + 5: # print every 5 seconds
+            prev_latency_time = time.time()
+            if avg_latency > target_latency:
+                with audit_rate.get_lock():
+                    audit_rate.value = max(audit_rate.value * 0.95,0.01)
+                    audit_val = audit_rate.value
+            else:
+                with audit_rate.get_lock():
+                    audit_rate.value = min(audit_rate.value * 1.05,1)
+                    audit_val = audit_rate.value
+            print("Current latency: {}. Adjusted audit rate to {}".format(avg_latency,audit_val))   
     
     # finally, wait for all worker processes to close
     for p in worker_processes:
