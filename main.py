@@ -17,6 +17,7 @@ import _pickle as pickle
 import matplotlib.animation as animation
 from matplotlib import style
 from matplotlib import pyplot as plt
+import matplotlib
 
 from worker_process import worker as worker_fn
 
@@ -119,10 +120,11 @@ if __name__ == "__main__":
     START_TIME = time.time()
     
     # set up live metric plotting
-    plt.rcParams['animation.html'] = 'jshtml'
-    plt.rcParams['lines.linewidth'] = 0.5
-    
     style.use('fivethirtyeight')
+    plt.rcParams['animation.html'] = 'jshtml'
+    matplotlib.rcParams['lines.linewidth'] = 1.0
+    
+    
     colors = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
     fig,axs = plt.subplots(2,3,figsize = (10,15))
     fig.suptitle("Performance Monitor")
@@ -142,8 +144,12 @@ if __name__ == "__main__":
     axs[1,1].set_title("Jobs completed per process")
     axs[1,1].set(xlabel = "Time (s)" ,ylabel = "Jobs completed")
     
-    
-    
+    axs[1,2].imshow("test.png")
+#    handles, _ = axs[1,1].get_legend_handles_labels()
+#    labels = ["Worker {}".format(i) for i in range (num_workers)]
+#    axs[1,1].legend(labels, loc='lower right')
+#    #plt.subplots_adjust(right=0.85)
+
     fig.show()
     plt.pause(0.0001)
     
