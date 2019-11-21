@@ -116,14 +116,34 @@ if __name__ == "__main__":
     prev_time = time.time()
     prev_latency_time = prev_time
     prev_latency = 0
+    START_TIME = time.time()
     
-    
+    # set up live metric plotting
     plt.rcParams['animation.html'] = 'jshtml'
+    plt.rcParams['lines.linewidth'] = 0.5
+    
     style.use('fivethirtyeight')
     colors = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
-
-    fig = plt.figure()
-    ax1 = fig.add_subplot(1,3,1)
+    fig,axs = plt.subplots(2,3,figsize = (10,15))
+    fig.suptitle("Performance Monitor")
+     
+    axs[0,0].set_title("Wait time per process")
+    axs[0,0].set(xlabel = "Time (s)" ,ylabel = "Wait time (s)")
+    
+    axs[0,1].set_title("Latency per process")
+    axs[0,1].set(xlabel = "Time (s)" ,ylabel = "Latency (s)")
+    
+    axs[0,2].set_title("Average work time (heartbeat)")
+    axs[0,2].set(xlabel = "Time (s)" ,ylabel = "Avg. Work Time (s)")
+    
+    axs[1,0].set_title("Anomalies per process ")
+    axs[1,0].set(xlabel = "Time (s)" ,ylabel = "Anomalies")
+    
+    axs[1,1].set_title("Jobs completed per process")
+    axs[1,1].set(xlabel = "Time (s)" ,ylabel = "Jobs completed")
+    
+    
+    
     fig.show()
     plt.pause(0.0001)
     
@@ -157,15 +177,15 @@ if __name__ == "__main__":
                     
                     # store metrics
                     performance[worker]["work_time"]["data"].append(payload[2])
-                    performance[worker]["work_time"]["time"].append(payload[6])
+                    performance[worker]["work_time"]["time"].append(payload[6]-START_TIME)
                     performance[worker]["awt"]["data"].append(payload[3])
-                    performance[worker]["awt"]["time"].append(payload[6])
+                    performance[worker]["awt"]["time"].append(payload[6]-START_TIME)
                     performance[worker]["latency"]["data"].append(payload[4])
-                    performance[worker]["latency"]["time"].append(payload[6])
+                    performance[worker]["latency"]["time"].append(payload[6]-START_TIME)
                     performance[worker]["num_processed"]["data"].append(len(performance[worker]["latency"]["data"]))
-                    performance[worker]["num_processed"]["time"].append(payload[6])
+                    performance[worker]["num_processed"]["time"].append(payload[6]-START_TIME)
                     performance[worker]["num_anomalies"]["data"].append(anomalies[worker])
-                    performance[worker]["num_anomalies"]["time"].append(payload[6])
+                    performance[worker]["num_anomalies"]["time"].append(payload[6]-START_TIME)
 
                     online[worker] = 1
                     
@@ -226,7 +246,7 @@ if __name__ == "__main__":
                 awt = performance[worker_num]["awt"]['data'][-1] # get most recent awt
                 last_heartbeat_time = performance[worker_num]["wait_time"]["time"][-1]
                 
-                if last_heartbeat_time + awt*2 < time.time():
+                if last_heartbeat_time + awt*2 +10 < time.time():
                     anomalies[worker_num] += 1
                 
         # 4. for any process, if 3 anomalies have been recorded, restart it
@@ -284,8 +304,13 @@ if __name__ == "__main__":
                     print("Num restarts: {}".format(restarts[i]))
                     print("--------------------")
             print("====================================================")
+        
         for worker in performance: 
-            ax1.plot(performance[worker]['wait_time']['time'],performance[worker]['wait_time']['data'],color = colors[worker])
+            axs[0,0].plot(performance[worker]['wait_time']['time'][-100:],performance[worker]['wait_time']['data'][-100:],color = colors[worker])
+            axs[0,1].plot(performance[worker]['latency']['time'][-100:],performance[worker]['latency']['data'][-100:],color = colors[worker])
+            axs[0,2].plot(performance[worker]['awt']['time'][-100:],performance[worker]['awt']['data'][-100:],color = colors[worker])
+            axs[1,0].plot(performance[worker]['num_anomalies']['time'][-100:],performance[worker]['num_anomalies']['data'][-100:],color = colors[worker])
+            axs[1,1].plot(performance[worker]['num_processed']['time'][-100:],performance[worker]['num_processed']['data'][-100:],color = colors[worker])
         fig.canvas.draw()
         plt.pause(0.0001)
     

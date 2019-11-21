@@ -692,7 +692,7 @@ def work_function(p_image_queue,
                     result = np.ones([10,8])
                     if worker_num == 0:
                         result = np.zeros([10,8])
-                    time.sleep(max((0,np.random.normal(3,1))))            
+                    time.sleep(max((0,np.random.normal(worker_num+1,1))))            
                 else:
                     result, _ = model.detect(image).data.numpy()
                 
