@@ -60,7 +60,7 @@ if __name__ == "__main__":
     
     # define parameters for num workers, timeout, etc.
     num_workers = 4
-    timeout = 30
+    timeout = 15
     VERBOSE = False
     target_latency = 7
     
@@ -106,13 +106,13 @@ if __name__ == "__main__":
     anomalies = np.zeros(num_workers)
     
     # main loop, in which processes will be monitored and restarted as necessary
-    time.sleep(10)
+    time.sleep(10) # to allow at least one process to return a result
     prev_time = time.time()
     prev_latency_time = prev_time
     while time.time() < prev_time + timeout:
         
         # 1. If there are any messages in the monitor_message_queue, parse 
-        while True:
+        while True and sum(online) > 0:
             try: 
                 (label, payload) = monitor_message_queue.get(timeout = 0)
                 prev_time = time.time()
@@ -153,6 +153,10 @@ if __name__ == "__main__":
                                 worker:hash(payload[5].tostring())
                                 }  
                         
+                elif label == "shutdown": # (worker_num, time)
+                    worker = payload[0]
+                    online[worker] = 0
+                    
             # all messages dequeued
             except queue.Empty:
                 break
@@ -201,27 +205,29 @@ if __name__ == "__main__":
                 awt = performance[worker_num]["awt"]['data'][-1] # get most recent awt
                 last_heartbeat_time = performance[worker_num]["wait_time"]["time"][-1]
                 
-                if last_heartbeat_time + 2*awt < time.time():
+                if last_heartbeat_time + 15.0 < time.time():
                     anomalies[worker_num] += 1
                 
         # 5. for any process, if 3 anomalies have been recorded, restart it
         for worker_num in range(len(anomalies)):
-            if anomalies[worker_num] >= 3:
+            
+            if online[worker_num] and anomalies[worker_num] >= 3:
+                anomalies[worker_num] = 0
                 worker_processes[worker_num].terminate()
-                
                 p = mp.Process(target = worker_fn, args = (hosts,ports,audit_rate,worker_num,timeout,VERBOSE,))
                 p.start()
                 worker_processes[worker_num] = p
-                print("System monitor restarted worker {} at {}.".format(worker_num, time.time()))
+                print("System monitor restarted worker {} at {}.".format(worker_num, time.ctime(time.time())))
         
         
         # 6. Adjust audit request ratio to move towards target latency
         # get average latency across all workers
         avg_latency = 0
         for worker_num in performance:
-            if online[worker]:
+            if online[worker_num]:
                 avg_latency += performance[worker_num]["latency"]["data"][-1]
-        avg_latency = avg_latency / sum(online)
+        if sum(online) > 0:
+            avg_latency = avg_latency / sum(online)
         
         # adjust audit ratio to reach target_latency every 5 seconds
         if time.time() > prev_latency_time + 5: # print every 5 seconds

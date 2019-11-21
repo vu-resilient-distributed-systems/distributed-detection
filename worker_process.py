@@ -43,7 +43,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     p_continue_consistency = mp.Value('b',True,lock = True)
     
     # changeable worker parameters
-    lb_timeout = 2
+    lb_timeout = 0.2
     query_timeout = 5
     consistency_rate = 0.5 # queries per second
     heart_rate = 0.05

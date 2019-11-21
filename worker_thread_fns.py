@@ -141,6 +141,8 @@ def query_handler(host,
                 if VERBOSE: print("w{}: Responded to query request im {} for worker {}.".format(worker_num,requested_im_id,request_worker_num))
             except queue.Empty:
                 break
+            except PermissionError:
+                print("---------------------worker {} permission error.".format(worker_num))
             
         # 3. parse query results
         while True:
@@ -198,7 +200,7 @@ def query_handler(host,
                 
                 # output query overall result
                 p_message_queue.put(message)
-                if VERBOSE: print("w{}: Output query result for im {}.".format(worker_num,id_tag))
+                print("w{}: Output query result for im {}.".format(worker_num,id_tag))
                 timed_out.append(id_tag)
           
         # remove all handled requests
@@ -493,6 +495,9 @@ def heartbeat(p_average_time,
     # tell consistency thread to exit
     with p_continue_consistency.get_lock():
          p_continue_consistency.value = False
+    
+    # send message to monitor process indicating worker is shutting down gracefully
+    message = ("shutdown",(worker_num, time.time()))
     
     print("w{}: Heartbeat thread exited.".format(worker_num))
     
