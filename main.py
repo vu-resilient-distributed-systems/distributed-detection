@@ -14,6 +14,10 @@ import time
 import zmq
 import _pickle as pickle
 
+import matplotlib.animation as animation
+from matplotlib import style
+from matplotlib import pyplot as plt
+
 from worker_process import worker as worker_fn
 
 def monitor_receiver(hosts,
@@ -54,7 +58,8 @@ def monitor_receiver(hosts,
     sock.close()
     context.term()
     print ("Monitor process closed receiver socket.")
-  
+
+
 if __name__ == "__main__":
     
     
@@ -96,13 +101,14 @@ if __name__ == "__main__":
     performance = {}
     for i in range(num_workers):
         performance[i] = {}
-        for metric in ["wait_time","latency","awt","work_time"]:
+        for metric in ["wait_time","latency","awt","work_time","num_processed","num_anomalies"]:
             performance[i][metric] = {
                     "data":[],
                     "time":[]}
-    audits = {}
     
+    audits = {}
     online = np.zeros(num_workers).astype(int)
+    restarts = np.zeros(num_workers).astype(int)
     anomalies = np.zeros(num_workers)
     
     # main loop, in which processes will be monitored and restarted as necessary
@@ -111,7 +117,18 @@ if __name__ == "__main__":
     prev_latency_time = prev_time
     prev_latency = 0
     
+    
+    plt.rcParams['animation.html'] = 'jshtml'
+    style.use('fivethirtyeight')
+    colors = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
+
+    fig = plt.figure()
+    ax1 = fig.add_subplot(1,3,1)
+    fig.show()
+    plt.pause(0.0001)
+    
     while time.time() < prev_time + timeout:
+
         
         # 1. If there are any messages in the monitor_message_queue, parse 
         while True:
@@ -145,6 +162,11 @@ if __name__ == "__main__":
                     performance[worker]["awt"]["time"].append(payload[6])
                     performance[worker]["latency"]["data"].append(payload[4])
                     performance[worker]["latency"]["time"].append(payload[6])
+                    performance[worker]["num_processed"]["data"].append(len(performance[worker]["latency"]["data"]))
+                    performance[worker]["num_processed"]["time"].append(payload[6])
+                    performance[worker]["num_anomalies"]["data"].append(anomalies[worker])
+                    performance[worker]["num_anomalies"]["time"].append(payload[6])
+
                     online[worker] = 1
                     
                     # store hash for audits
@@ -162,11 +184,8 @@ if __name__ == "__main__":
             # all messages dequeued
             except queue.Empty:
                 break
-    
-        # 2. Plot performance metrics
-        # TODO
         
-        # 3. Deal with audit results
+        # 2. Deal with audit results
         deletions = []
         for im in audits:
             if len(audits[im]) == 3:
@@ -200,7 +219,7 @@ if __name__ == "__main__":
             del audits[im]
             
             
-        # 4. Check for unresponsive processes        
+        # 3. Check for unresponsive processes        
         # check each process to make sure a heartbeat has been received within 2 x average work time
         for worker_num in performance:
             if online[worker_num]:
@@ -210,13 +229,14 @@ if __name__ == "__main__":
                 if last_heartbeat_time + awt*2 < time.time():
                     anomalies[worker_num] += 1
                 
-        # 5. for any process, if 3 anomalies have been recorded, restart it
+        # 4. for any process, if 3 anomalies have been recorded, restart it
         for worker_num in range(len(anomalies)):
             
             if online[worker_num] and anomalies[worker_num] >= 3:
                 
                 anomalies[worker_num] = 0
                 online[worker_num] = 0
+                restarts[worker_num] += 1
                 
                 worker_processes[worker_num].terminate()
                 p = mp.Process(target = worker_fn, args = (hosts,ports,audit_rate,worker_num,timeout,VERBOSE,False))
@@ -226,7 +246,7 @@ if __name__ == "__main__":
                 print("System monitor restarted worker {} at {}.".format(worker_num, time.ctime(time.time())))
         
         
-        # 6. Adjust audit request ratio to move towards target latency
+        # 5. Adjust audit request ratio to move towards target latency
         # get average latency across all workers
         avg_latency = 0
         for worker_num in performance:
@@ -250,6 +270,24 @@ if __name__ == "__main__":
                     audit_rate.value = min(audit_rate.value * 1.05,1)
                     audit_val = audit_rate.value
             print("Current latency: {}. Adjusted audit rate to {}".format(avg_latency,audit_val))   
+    
+            # 6. Plot performance metrics
+            print("================= Monitor Summary ==================")
+            for i in range(0,len(online)):
+                status =  "Online" if online[i] else "Offline"
+                print("Worker {} status: {}".format(i,status))
+                if online[i]:
+                    print("Current wait time: {}".format(performance[i]['wait_time']['data'][-1]))
+                    print("Average work time: {}".format(performance[i]['awt']['data'][-1]))
+                    print("Most recent latency: {}".format(performance[i]['latency']['data'][-1]))
+                    print("Num images processed: {}".format(len(performance[i]['work_time']['data'])))
+                    print("Num restarts: {}".format(restarts[i]))
+                    print("--------------------")
+            print("====================================================")
+        for worker in performance: 
+            ax1.plot(performance[worker]['wait_time']['time'],performance[worker]['wait_time']['data'],color = colors[worker])
+        fig.canvas.draw()
+        plt.pause(0.0001)
     
     # finally, wait for all worker processes to close
     print("========================Monitor Process exited.================================")
