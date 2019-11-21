@@ -134,7 +134,6 @@ if __name__ == "__main__":
     
     axs[0,1].set_title("Latency per process")
     axs[0,1].set(xlabel = "Time (s)" ,ylabel = "Latency (s)")
-    
     axs[0,2].set_title("Average work time (heartbeat)")
     axs[0,2].set(xlabel = "Time (s)" ,ylabel = "Avg. Work Time (s)")
     
@@ -144,11 +143,8 @@ if __name__ == "__main__":
     axs[1,1].set_title("Jobs completed per process")
     axs[1,1].set(xlabel = "Time (s)" ,ylabel = "Jobs completed")
     
-    axs[1,2].imshow("test.png")
-#    handles, _ = axs[1,1].get_legend_handles_labels()
-#    labels = ["Worker {}".format(i) for i in range (num_workers)]
-#    axs[1,1].legend(labels, loc='lower right')
-#    #plt.subplots_adjust(right=0.85)
+    labels = ["Worker {}".format(i) for i in range (num_workers)]
+
 
     fig.show()
     plt.pause(0.0001)
@@ -310,13 +306,18 @@ if __name__ == "__main__":
                     print("Num restarts: {}".format(restarts[i]))
                     print("--------------------")
             print("====================================================")
-        
+        handles = []
         for worker in performance: 
+            
             axs[0,0].plot(performance[worker]['wait_time']['time'][-100:],performance[worker]['wait_time']['data'][-100:],color = colors[worker])
             axs[0,1].plot(performance[worker]['latency']['time'][-100:],performance[worker]['latency']['data'][-100:],color = colors[worker])
             axs[0,2].plot(performance[worker]['awt']['time'][-100:],performance[worker]['awt']['data'][-100:],color = colors[worker])
             axs[1,0].plot(performance[worker]['num_anomalies']['time'][-100:],performance[worker]['num_anomalies']['data'][-100:],color = colors[worker])
-            axs[1,1].plot(performance[worker]['num_processed']['time'][-100:],performance[worker]['num_processed']['data'][-100:],color = colors[worker])
+            out = axs[1,1].plot(performance[worker]['num_processed']['time'][-100:],performance[worker]['num_processed']['data'][-100:],color = colors[worker])
+            handles.append(out[0])
+        #handles, labels = axs[1,1].get_legend_handles_labels()
+        
+        fig.legend(handles, labels, loc='lower right')
         fig.canvas.draw()
         plt.pause(0.0001)
     
