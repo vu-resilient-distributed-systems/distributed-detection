@@ -207,7 +207,7 @@ if __name__ == "__main__":
                 awt = performance[worker_num]["awt"]['data'][-1] # get most recent awt
                 last_heartbeat_time = performance[worker_num]["wait_time"]["time"][-1]
                 
-                if last_heartbeat_time + 15.0 < time.time():
+                if last_heartbeat_time + awt*2 < time.time():
                     anomalies[worker_num] += 1
                 
         # 5. for any process, if 3 anomalies have been recorded, restart it
