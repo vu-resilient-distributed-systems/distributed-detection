@@ -16,7 +16,7 @@ from worker_thread_fns import ( receive_images,send_messages,receive_messages,
                                consistency_function, write_data_csv)
 
 
-def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
+def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False,OVERWRITE = True):
     """
     Given a list of hosts and ports (one pair for each worker) and an id num,
     creates a series of threads and shared variables that carry out the work in
@@ -60,10 +60,13 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False):
     ports.remove(port)
     
     # overwrite datafile and write one dummy line
-    data_path = os.path.join('databases','worker_{}_database.csv'.format(worker_num))
-    with open(data_path,mode = 'w') as f:
-        pass
-    write_data_csv(data_path,np.zeros([2,8])-1,-1,-1)
+    if OVERWRITE:
+        data_path = os.path.join('databases','worker_{}_database.csv'.format(worker_num))
+        p_database_lock.acquire()
+        with open(data_path,mode = 'w') as f:
+            pass
+        p_database_lock.release()
+        write_data_csv(data_path,np.zeros([2,8])-1,-1,p_database_lock,-1)
 
     
     # create image receiver thread

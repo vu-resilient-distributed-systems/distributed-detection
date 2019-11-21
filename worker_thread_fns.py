@@ -105,10 +105,8 @@ def query_handler(host,
             prev_time = time.time()
             
             # add query to dict of active queries
-            p_database_lock.acquire()
             active_queries[queried_im_id] = {"time_in": prev_time,
-                                         "vals": [get_im_data(data_file,queried_im_id)[0]]}
-            p_database_lock.release()
+                                         "vals": [get_im_data(data_file,queried_im_id,p_database_lock)[0]]}
             
             # forward query to all other workers via message queue
             # the False indicates that this is not an internal request
@@ -128,9 +126,7 @@ def query_handler(host,
                 prev_time = time.time()
                 
                 # helper function returns relevant numpy array and num_validators or None,0
-                p_database_lock.acquire()
-                data = get_im_data(data_file,requested_im_id)[0]
-                p_database_lock.release()
+                data = get_im_data(data_file,requested_im_id,p_database_lock)[0]
                 
                 # send data back via message queue
                 if INTERNAL:
@@ -139,10 +135,11 @@ def query_handler(host,
                     message = ("query_result",(data,requested_im_id,request_worker_num))
                 p_message_queue.put(message)  
                 if VERBOSE: print("w{}: Responded to query request im {} for worker {}.".format(worker_num,requested_im_id,request_worker_num))
+           
             except queue.Empty:
                 break
-            except PermissionError:
-                print("---------------------worker {} permission error.".format(worker_num))
+#            except PermissionError:
+#                print("---------------------worker {} permission error.".format(worker_num))
             
         # 3. parse query results
         while True:
@@ -185,19 +182,14 @@ def query_handler(host,
                 # lastly, compare to own data and see if count is greater than
                 # num_validators on previous data. If not, send own value and 
                 # don't update own value
-                p_database_lock.acquire()
-                (own_data, own_num_validators) = get_im_data(data_file,id_tag)
-   
-                
+                (own_data, own_num_validators) = get_im_data(data_file,id_tag,p_database_lock)
                 if own_num_validators >= count:
                     message = ("query_output", (id_tag,own_data))
                 else:
                     message = ("query_output", (id_tag,most_common_data))
                     # update database
-                    update_data(data_file,count,most_common_data)
+                    update_data(data_file,count,most_common_data,p_database_lock)
                     
-                p_database_lock.release() 
-                
                 # output query overall result
                 p_message_queue.put(message)
                 print("w{}: Output query result for im {}.".format(worker_num,id_tag))
@@ -255,10 +247,8 @@ def consistency_function(p_message_queue,
                 with p_last_balanced.get_lock():
                     next_im_id = p_last_balanced.value
             # add query to dict of active queries
-            p_database_lock.acquire()
             active_queries[next_im_id] = {"time_in": time.time(),
-                                             "vals": [get_im_data(data_file,next_im_id)[0]]}
-            p_database_lock.release()
+                                             "vals": [get_im_data(data_file,next_im_id,p_database_lock)[0]]}
             
             # forward consistency query to all other workers via message queue
             # the True indicates that this is an internal request
@@ -307,14 +297,12 @@ def consistency_function(p_message_queue,
                     # lastly, compare to own data and see if count is greater than
                     # num_validators on previous data. If not, send own value and 
                     # don't update own value
-                    p_database_lock.acquire()
-                    (own_data, own_num_validators) = get_im_data(data_file,id_tag)
+                    (own_data, own_num_validators) = get_im_data(data_file,id_tag,p_database_lock)
                     if own_num_validators < count:
                         assert len(most_common_data[0]) > 0, print("most_common_data isn't valid")
-                        update_data(data_file,count,most_common_data)
+                        update_data(data_file,count,most_common_data,p_database_lock)
                         if VERBOSE: print("w{}: Consistency update on im {} with {} validators.".format(worker_num,id_tag,count))
                     
-                    p_database_lock.release()
                     timed_out.append(id_tag)
               
             # remove all handled requests
@@ -721,9 +709,7 @@ def work_function(p_image_queue,
                 if TASK:
                     # write results to database
                     data_file = os.path.join("databases","worker_{}_database.csv".format(worker_num))
-                    p_database_lock.acquire()
-                    write_data_csv(data_file,result,im_id)
-                    p_database_lock.release()
+                    write_data_csv(data_file,result,im_id,p_database_lock)
 
                     # compute metrics
                     latency = work_end_time - im_time_received
@@ -751,10 +737,11 @@ def work_function(p_image_queue,
     print("w{}: Work thread exited. {} images processed".format(worker_num,count))
 
     
-def write_data_csv(file,data,im_id,num_validators=1):
+def write_data_csv(file,data,im_id,lock,num_validators=1):
     """
     Writes data in csv for, appending to file and labeling each row with im_id
     """
+    lock.acquire()
     with open(file, mode = 'a') as f:
         for row in data:
             f.write((str(im_id) + "," + str(num_validators)))
@@ -762,9 +749,16 @@ def write_data_csv(file,data,im_id,num_validators=1):
                 f.write(",")
                 f.write(str(val))
             f.write("\n") 
+    lock.release()
      
-def get_im_data(file,im_id):
-    data = np.genfromtxt(file,delimiter = ',')
+def get_im_data(file,im_id,lock):
+    try:
+        lock.acquire()
+        data = np.genfromtxt(str(file),delimiter = ',')
+        lock.release()
+    except OSError:
+        print(file)
+        return None,0
     # first row is im_id, second row is num_validators
     if np.size(data) > 0: # check whether there is any data
         out = data[np.where(data[:,0] == im_id)[0],:]
@@ -777,10 +771,11 @@ def get_im_data(file,im_id):
         return None, 0
         
     
-def update_data(file,num_validators, updated_data):
+def update_data(file,num_validators, updated_data,lock):
     """
     Given one N x 10 arrray, replaces
     """
+    lock.acquire()
     data = np.genfromtxt(file,delimiter = ',')
     im_id = updated_data[0,0]
     # update number of validators
@@ -797,7 +792,7 @@ def update_data(file,num_validators, updated_data):
                 f.write(" , ")
                 f.write(str(val))
             f.write("\n") 
-    
+    lock.release()
     
 # tester code
 if __name__ == "__main__":

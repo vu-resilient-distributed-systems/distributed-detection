@@ -102,17 +102,19 @@ if __name__ == "__main__":
                     "time":[]}
     audits = {}
     
-    online = np.zeros(num_workers)
+    online = np.zeros(num_workers).astype(int)
     anomalies = np.zeros(num_workers)
     
     # main loop, in which processes will be monitored and restarted as necessary
     time.sleep(10) # to allow at least one process to return a result
     prev_time = time.time()
     prev_latency_time = prev_time
+    prev_latency = 0
+    
     while time.time() < prev_time + timeout:
         
         # 1. If there are any messages in the monitor_message_queue, parse 
-        while True and sum(online) > 0:
+        while True:
             try: 
                 (label, payload) = monitor_message_queue.get(timeout = 0)
                 prev_time = time.time()
@@ -212,10 +214,14 @@ if __name__ == "__main__":
         for worker_num in range(len(anomalies)):
             
             if online[worker_num] and anomalies[worker_num] >= 3:
+                
                 anomalies[worker_num] = 0
+                online[worker_num] = 0
+                
                 worker_processes[worker_num].terminate()
-                p = mp.Process(target = worker_fn, args = (hosts,ports,audit_rate,worker_num,timeout,VERBOSE,))
+                p = mp.Process(target = worker_fn, args = (hosts,ports,audit_rate,worker_num,timeout,VERBOSE,False))
                 p.start()
+                
                 worker_processes[worker_num] = p
                 print("System monitor restarted worker {} at {}.".format(worker_num, time.ctime(time.time())))
         
@@ -228,7 +234,10 @@ if __name__ == "__main__":
                 avg_latency += performance[worker_num]["latency"]["data"][-1]
         if sum(online) > 0:
             avg_latency = avg_latency / sum(online)
-        
+            prev_latency = avg_latency
+        else:
+            avg_latency = prev_latency
+            
         # adjust audit ratio to reach target_latency every 5 seconds
         if time.time() > prev_latency_time + 5: # print every 5 seconds
             prev_latency_time = time.time()
@@ -243,6 +252,7 @@ if __name__ == "__main__":
             print("Current latency: {}. Adjusted audit rate to {}".format(avg_latency,audit_val))   
     
     # finally, wait for all worker processes to close
+    print("========================Monitor Process exited.================================")
     for p in worker_processes:
         p.join()
     print("All worker processes terminated")    
