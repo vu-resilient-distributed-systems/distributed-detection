@@ -160,7 +160,6 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False,OVER
                                      p_continue_consistency,
                                      consistency_rate, # queries per second
                                      query_timeout,
-                                     timeout,
                                      True,
                                      worker_num))
                                     

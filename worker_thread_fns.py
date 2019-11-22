@@ -27,8 +27,12 @@ def receive_images(p_image_queue,p_new_im_id_queue, host = "127.0.0.1", port = 6
     shared image queue the received images
     p_image_queue - queue created by worker process and shared among threads 
                     for storing received images
+    p_new_image_id_queue - thread-shared queue for storing integers corresponding
+                    to the image ID of each image added to p_image_queue
     host - string - the host IP address, default is local host
     port - int - port num
+    VERBOSE - controls amount of printed output
+    worker_num - int 
     """
     
     # open ZMQ socket
@@ -77,12 +81,16 @@ def query_handler(host,
             accesses own database and returns the requested data via message queue
         p_query_requests - thread-shared queue object
         p_message_queue - thread-shared queue object
+        p_database_lock - a multiprocessing lock object to prevent simultaneous writes to database
         3. Parses all return values from p_query_result
         p_query_results - thread-shared queue object
         4. after timeout period, returns the most common value to the client via message queue
            i.e. it is assumed client is subscribed to "query_output" from this worker's sender port
            Also updates own database with this most common value
+        query_timeout - int - controls how long to wait for responses before sending result
         timeout - float - seconds
+        VERBOSE - bool - controls amount of printed output
+        worker_num - int
     """
     
     # specify database file path
@@ -94,6 +102,7 @@ def query_handler(host,
     sock.setblocking(0) 
     print("w{}: Query thread opened receiver socket.".format(worker_num))
     
+    # will keep track of all queries that have not timed out
     active_queries = {}
     
     prev_time = time.time()
@@ -146,7 +155,7 @@ def query_handler(host,
             try:
                 (query_data,query_im_id) = p_query_results.get(timeout = 0) 
                 prev_time = time.time()
-                # add if still active
+                # add if this query is still active
                 if query_im_id in active_queries.keys():
                     active_queries[query_im_id]["vals"].append(query_data)  
                 if VERBOSE: print("w{}: Parsed query response for im {}.".format(worker_num,query_im_id))
@@ -181,7 +190,7 @@ def query_handler(host,
         
                 # lastly, compare to own data and see if count is greater than
                 # num_validators on previous data. If not, send own value and 
-                # don't update own value
+                # don't update own value. If so, update own value and num_validators
                 (own_data, own_num_validators) = get_im_data(data_file,id_tag,p_database_lock)
                 if own_num_validators >= count:
                     message = ("query_output", (id_tag,own_data))
@@ -212,13 +221,22 @@ def consistency_function(p_message_queue,
                          p_continue_consistency,
                          consistency_rate = 2, # queries per second
                          query_timeout = 5,
-                         timeout = 20,
                          VERBOSE = False,
                          worker_num = 0):
     """
-    Systematically sends queries in on each image ID to all workers, and uses the 
+    Systematically sends queries on each processed image ID to all workers, and uses the 
     most common returned value to update own database. 
+    p_consistency_results - thread-shared queue used to store results of internal
+                            query requests
+    p_last_balanced - shared mp Value - int - corresponds to last im id received and added to processing queue
+    p_continue_consistence - shared mp Value - bool - tells consistency function
+                                when to exit, otherwise would continue sending queries forever
+    consistency rate - float - number of consistency queries to send per second
+    query_timeout - float - how long to wait before using results to update database
+    VERBOSE - controls amount of printed output
+    worker_num - int    
     """
+    
     print("w{}: Consistency thread started.".format(worker_num))
     
     # path to worker's database
@@ -234,9 +252,11 @@ def consistency_function(p_message_queue,
     prev_time = time.time()
     active_queries = {}    
     
+    # get continue_val
     with p_continue_consistency.get_lock():
         continue_val = p_continue_consistency.value
-        
+       
+    # continue until the val of p_continue_consistency is changed by heartbeat thread exiting
     while continue_val:
         
         if time.time() > prev_time + 1/consistency_rate:
@@ -323,9 +343,14 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worke
     Repeatedly checks p_message_queue for messages and sends them to all other 
     workers. It is assumed that the other processes prepackage information so all
     this function has to do is send the information. messages are of the form:
-        (topic, (pickled message payload))
-    worker_addresses - list of tuples (host_address (string), host port (int))
-    p_message_queue - shared queue amongst all worker threads
+        (topic, (unpickled message payload))
+    host - string - own host address
+    port - int - own port number
+    p_message_queue - shared queue amongst all worker threads where messages are 
+                        put to be sent
+    timeout - float
+    VERBOSE - bool - controls amount of printed output
+    worker_num - int
     """    
     
     # open publisher socket
@@ -347,7 +372,7 @@ def send_messages(host,port,p_message_queue, timeout = 20, VERBOSE = False,worke
             
             
         except queue.Empty:
-            time.sleep(0.1)
+            time.sleep(0.01)
     
     sock.close()
     context.term()
@@ -369,8 +394,16 @@ def receive_messages(hosts,
     workers. It is assumed that the other processes prepackage information so all
     this function has to do is send the information. messages are of the form:
         (topic, (unpickled message payload))
-    worker_addresses - list of tuples (host_address (string), host port (int))
-    p_message_queue - shared queue amongst all worker threads
+    hosts - list of strings corresponding to all other workers' host addresses
+    ports - list of ints corresponding to all other workers' ports
+    p_lb_queue - thread-shared queue for writing load-balancing message info
+    p_audit_buffer - thread-shared queue for writing audit request message info
+    p_query_requests - thread-shared queue for writing query request message info
+    p_query_results - thread-shared queue for writing query result message info
+    p_consistency_results - thread-shared queue for writing internal query info
+    timeout - float
+    VERBOSE - bool
+    worker_num - int
     """    
     
     # open publisher socket
@@ -441,7 +474,15 @@ def heartbeat(p_average_time,
               worker_num = 0):
     """
     Sends out as a heartbeat the average wait time at regular intervals
-    p_average_time - shared variable for average time,
+    p_average_time - shared mp.Value - float - moving average of work time for worker
+    p_message_queue - thread-shared queue for writing messages to be sent
+    p_num_tasks - shared mp.Value - int - length of task list + audit buffer
+    p_continue_consistency - shared mp.Value - bool - used to indicate to 
+                            consistency thread when to exit
+    interval - float - frequency at which to send out heartbeats
+    timeout - float
+    VERBOSE - bool
+    worker_num - int
     """
 
     # get average time
@@ -451,7 +492,7 @@ def heartbeat(p_average_time,
     with p_num_tasks.get_lock():
         num_tasks = p_num_tasks.value
     
-    
+    # get initial values before entering loop
     last_wait = avg_time* (num_tasks+1)
     prev_time = time.time()
     
