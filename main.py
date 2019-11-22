@@ -111,7 +111,8 @@ if __name__ == "__main__":
     online = np.zeros(num_workers).astype(int)
     restarts = np.zeros(num_workers).astype(int)
     anomalies = np.zeros(num_workers)
-    
+    all_audit_rates = []
+    all_audit_rate_times = []
     # main loop, in which processes will be monitored and restarted as necessary
     time.sleep(10) # to allow at least one process to return a result
     prev_time = time.time()
@@ -143,6 +144,9 @@ if __name__ == "__main__":
     axs[1,1].set_title("Jobs completed per process")
     axs[1,1].set(xlabel = "Time (s)" ,ylabel = "Jobs completed")
     
+    axs[1,2].set_title("Audit rate")
+    axs[1,2].set(xlabel = "Time (s)" ,ylabel = "Audit rate")
+    
     labels = ["Worker {}".format(i) for i in range (num_workers)]
 
 
@@ -161,7 +165,7 @@ if __name__ == "__main__":
                 if label == "heartbeat": #(time gen, wait time, worker_num)
                     worker = payload[2]
                     performance[worker]["wait_time"]["data"].append(payload[1])
-                    performance[worker]["wait_time"]["time"].append(payload[0])
+                    performance[worker]["wait_time"]["time"].append(payload[0]-START_TIME)
                     
                 elif label == "audit_result": # (worker_num,im_id,result))
                     im = payload[1]
@@ -248,7 +252,7 @@ if __name__ == "__main__":
                 awt = performance[worker_num]["awt"]['data'][-1] # get most recent awt
                 last_heartbeat_time = performance[worker_num]["wait_time"]["time"][-1]
                 
-                if last_heartbeat_time + awt*2 +10 < time.time():
+                if last_heartbeat_time + awt*2 +10 < time.time()-START_TIME:
                     anomalies[worker_num] += 1
                 
         # 4. for any process, if 3 anomalies have been recorded, restart it
@@ -291,6 +295,8 @@ if __name__ == "__main__":
                 with audit_rate.get_lock():
                     audit_rate.value = min(audit_rate.value * 1.05,1)
                     audit_val = audit_rate.value
+                    all_audit_rates.append(audit_val)
+                    all_audit_rate_times.append(time.time()-START_TIME)
             print("Current latency: {}. Adjusted audit rate to {}".format(avg_latency,audit_val))   
     
             # 6. Plot performance metrics
@@ -315,6 +321,7 @@ if __name__ == "__main__":
             axs[1,0].plot(performance[worker]['num_anomalies']['time'][-100:],performance[worker]['num_anomalies']['data'][-100:],color = colors[worker])
             out = axs[1,1].plot(performance[worker]['num_processed']['time'][-100:],performance[worker]['num_processed']['data'][-100:],color = colors[worker])
             handles.append(out[0])
+        axs[1,2].plot(all_audit_rate_times,all_audit_rates, color = 'k')
         #handles, labels = axs[1,1].get_legend_handles_labels()
         
         fig.legend(handles, labels, loc='lower right')
