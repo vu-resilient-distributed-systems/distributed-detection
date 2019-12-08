@@ -150,6 +150,7 @@ if __name__ == "__main__":
     except:
         net2 = Darknet_Detector('cfg/yolov3.cfg','yolov3.weights','data/coco.names','pallete')
     
-    test_file = 'imgs/dog.jpg'
-    out, im = net2.detect(test_file)
+    test_file = 'imgs/img3.jpg'
+    out, im = net2.detect(test_file, show = True)
+    cv2.imwrite("out1.jpg",im)
     cv2.destroyAllWindows()

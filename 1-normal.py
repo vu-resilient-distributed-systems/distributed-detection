@@ -61,6 +61,9 @@ def monitor_receiver(hosts,
     print ("Monitor process closed receiver socket.")
 
 
+"""
+This is the main code for the monitor process.
+"""
 if __name__ == "__main__":
     
     
@@ -102,56 +105,49 @@ if __name__ == "__main__":
     performance = {}
     for i in range(num_workers):
         performance[i] = {}
-        for metric in ["wait_time","latency","awt","work_time","num_processed","num_anomalies"]:
+        for metric in ["wait_time","latency","awt","work_time","num_processed","num_anomalies","num_restarts"]:
             performance[i][metric] = {
                     "data":[],
                     "time":[]}
-    
     audits = {}
     online = np.zeros(num_workers).astype(int)
     restarts = np.zeros(num_workers).astype(int)
     anomalies = np.zeros(num_workers)
     all_audit_rates = []
     all_audit_rate_times = []
-    # main loop, in which processes will be monitored and restarted as necessary
+    
+    
+    # set up live metric plotting
+    style.use('fivethirtyeight')
+    plt.rcParams['animation.html'] = 'jshtml'
+    matplotlib.rcParams['lines.linewidth'] = 1.0
+    colors = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
+    fig,axs = plt.subplots(2,3,figsize = (10,15))
+    fig.suptitle("Performance Monitor")
+    axs[0,0].set_title("Wait time per process")
+    axs[0,0].set(xlabel = "Time (s)" ,ylabel = "Wait time (s)")
+    axs[0,1].set_title("Latency per process")
+    axs[0,1].set(xlabel = "Time (s)" ,ylabel = "Latency (s)")
+    axs[0,2].set_title("Average work time (heartbeat)")
+    axs[0,2].set(xlabel = "Time (s)" ,ylabel = "Avg. Work Time (s)")
+    axs[1,0].set_title("Restarts per process ")
+    axs[1,0].set(xlabel = "Time (s)" ,ylabel = "Restarts")
+    axs[1,1].set_title("Jobs completed per process")
+    axs[1,1].set(xlabel = "Time (s)" ,ylabel = "Jobs completed")
+    axs[1,2].set_title("Audit rate")
+    axs[1,2].set(xlabel = "Time (s)" ,ylabel = "Audit rate")
+    labels = ["Worker {}".format(i) for i in range (num_workers)]
+    fig.show()
+    plt.pause(0.0001)
+    
+    
+        # main loop, in which processes will be monitored and restarted as necessary
     time.sleep(10) # to allow at least one process to return a result
     prev_time = time.time()
     prev_latency_time = prev_time
     prev_latency = 0
     START_TIME = time.time()
     
-    # set up live metric plotting
-    style.use('fivethirtyeight')
-    plt.rcParams['animation.html'] = 'jshtml'
-    matplotlib.rcParams['lines.linewidth'] = 1.0
-    
-    
-    colors = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
-    fig,axs = plt.subplots(2,3,figsize = (10,15))
-    fig.suptitle("Performance Monitor")
-     
-    axs[0,0].set_title("Wait time per process")
-    axs[0,0].set(xlabel = "Time (s)" ,ylabel = "Wait time (s)")
-    
-    axs[0,1].set_title("Latency per process")
-    axs[0,1].set(xlabel = "Time (s)" ,ylabel = "Latency (s)")
-    axs[0,2].set_title("Average work time (heartbeat)")
-    axs[0,2].set(xlabel = "Time (s)" ,ylabel = "Avg. Work Time (s)")
-    
-    axs[1,0].set_title("Anomalies per process ")
-    axs[1,0].set(xlabel = "Time (s)" ,ylabel = "Anomalies")
-    
-    axs[1,1].set_title("Jobs completed per process")
-    axs[1,1].set(xlabel = "Time (s)" ,ylabel = "Jobs completed")
-    
-    axs[1,2].set_title("Audit rate")
-    axs[1,2].set(xlabel = "Time (s)" ,ylabel = "Audit rate")
-    
-    labels = ["Worker {}".format(i) for i in range (num_workers)]
-
-
-    fig.show()
-    plt.pause(0.0001)
     
     while time.time() < prev_time + timeout:
 
@@ -192,6 +188,8 @@ if __name__ == "__main__":
                     performance[worker]["num_processed"]["time"].append(payload[6]-START_TIME)
                     performance[worker]["num_anomalies"]["data"].append(anomalies[worker])
                     performance[worker]["num_anomalies"]["time"].append(payload[6]-START_TIME)
+                    performance[worker]["num_restarts"]["data"].append(restarts[worker])
+                    performance[worker]["num_restarts"]["time"].append(payload[6]-START_TIME)
 
                     online[worker] = 1
                     
@@ -253,7 +251,7 @@ if __name__ == "__main__":
                 last_heartbeat_time = performance[worker_num]["wait_time"]["time"][-1]
                 
                 if last_heartbeat_time + awt*2 +10 < time.time()-START_TIME:
-                    anomalies[worker_num] += 1
+                    anomalies[worker_num] += 3
                 
         # 4. for any process, if 3 anomalies have been recorded, restart it
         for worker_num in range(len(anomalies)):
@@ -291,13 +289,14 @@ if __name__ == "__main__":
                 with audit_rate.get_lock():
                     audit_rate.value = max(audit_rate.value * 0.95,0.01)
                     audit_val = audit_rate.value
+                    all_audit_rates.append(audit_val)
+                    all_audit_rate_times.append(time.time()-START_TIME)
             else:
                 with audit_rate.get_lock():
                     audit_rate.value = min(audit_rate.value * 1.05,1)
                     audit_val = audit_rate.value
                     all_audit_rates.append(audit_val)
                     all_audit_rate_times.append(time.time()-START_TIME)
-            print("Current latency: {}. Adjusted audit rate to {}".format(avg_latency,audit_val))   
     
             # 6. Plot performance metrics
             print("================= Monitor Summary ==================")
@@ -311,19 +310,20 @@ if __name__ == "__main__":
                     print("Num images processed: {}".format(len(performance[i]['work_time']['data'])))
                     print("Num restarts: {}".format(restarts[i]))
                     print("--------------------")
+                    
+            print("Current latency: {}. Adjusted audit rate to {}".format(avg_latency,audit_val))   
             print("====================================================")
+        
+        # update plot    
         handles = []
-        for worker in performance: 
-            
+        for worker in performance:         
             axs[0,0].plot(performance[worker]['wait_time']['time'][-100:],performance[worker]['wait_time']['data'][-100:],color = colors[worker])
             axs[0,1].plot(performance[worker]['latency']['time'][-100:],performance[worker]['latency']['data'][-100:],color = colors[worker])
             axs[0,2].plot(performance[worker]['awt']['time'][-100:],performance[worker]['awt']['data'][-100:],color = colors[worker])
-            axs[1,0].plot(performance[worker]['num_anomalies']['time'][-100:],performance[worker]['num_anomalies']['data'][-100:],color = colors[worker])
+            axs[1,0].plot(performance[worker]['num_restarts']['time'][-100:],performance[worker]['num_restarts']['data'][-100:],color = colors[worker])
             out = axs[1,1].plot(performance[worker]['num_processed']['time'][-100:],performance[worker]['num_processed']['data'][-100:],color = colors[worker])
             handles.append(out[0])
-        axs[1,2].plot(all_audit_rate_times,all_audit_rates, color = 'k')
-        #handles, labels = axs[1,1].get_legend_handles_labels()
-        
+        axs[1,2].plot(all_audit_rate_times,all_audit_rates, color = 'k')        
         fig.legend(handles, labels, loc='lower right')
         fig.canvas.draw()
         plt.pause(0.0001)
