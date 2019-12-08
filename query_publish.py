@@ -19,7 +19,7 @@ import _pickle as pickle
 import numpy as np
 
 
-def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts,worker_ports):
+def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts,worker_ports,VERBOSE = True):
     """ publishes a request for information on a given image at a random rate
     rate - float -  average rate of queries (0.5) = 0.5 queries per second
     socket - socket to publish queries on 
@@ -32,6 +32,8 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
     worker_ports - list of ints - port for each worker
     """
     
+    all_active_queries = []
+    completed_queries = []
     all_im_ids = []
     next_time = time.time() + np.random.normal(1/rate,3)
     
@@ -50,10 +52,17 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
             (label,data) = pickle.loads(temp)
             if label == "query_output":
                 # data is numpy array
-                if type(data[1]) == np.ndarray: 
-                    print("{} objects detected in image {}.".format(len(data[1]),data[0]))
-                else:
-                    print("No results yet for image {}.".format(data[0]))
+                if VERBOSE:
+                    if type(data[1]) == np.ndarray: 
+                        print("{} objects detected in image {}.".format(len(data[1]),data[0]))
+                        
+                        # indicate that query has been answered
+                        if data[0] in all_active_queries:
+                            all_active_queries.remove(data[0])
+                            completed_queries.append(data[0])
+                        
+                    else:
+                        print("No results yet for image {}.".format(data[0]))
         except zmq.ZMQError:
             pass
         
@@ -61,9 +70,17 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
         # send a new query if sufficient time has passed
         if time.time() > next_time and len(all_im_ids) > 0:
             
-            # get random im_id
-            random.shuffle(all_im_ids)
-            im_id = all_im_ids[0]
+            # get random im_id that hasn't already been queried
+            if len(all_active_queries) > 10:
+                im_id = all_active_queries[0]
+            else:
+                im_id = -1
+                tries = 0
+                while tries < 5 and (im_id == -1 or im_id in all_active_queries or im_id in completed_queries):
+                    random.shuffle(all_im_ids)
+                    im_id = all_im_ids[0]
+                    tries += 1
+                all_active_queries.append(im_id)
             
             # get random worker
             idx = random.randint(0,len(worker_ports)-1)
@@ -73,9 +90,13 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
             # combine into single string
             message = str(im_id)
             pub_socket.sendto(message.encode('utf-8'),(worker_addr,worker_port))
-            print("Sent query request: " + message)
+            
+            if VERBOSE:
+                print("Sent query request: " + message)
             next_time = time.time() + np.random.normal(1/rate,3)
-
+            
+            print("{} active queries remaining.".format(len(all_active_queries)))
+            
     pub_socket.close()
     im_sub_socket.close()
     
