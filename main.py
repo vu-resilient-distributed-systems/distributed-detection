@@ -124,9 +124,9 @@ if __name__ == "__main__":
     colors = [p['color'] for p in plt.rcParams['axes.prop_cycle']]
     fig,axs = plt.subplots(2,3,figsize = (10,15))
     fig.suptitle("Performance Monitor")
-    axs[0,0].set_title("Wait time (heartbeat)")
+    axs[0,0].set_title("Est. wait time (heartbeat)")
     axs[0,0].set(xlabel = "Time (s)" ,ylabel = "Wait time (s)")
-    axs[0,1].set_title("Latency")
+    axs[0,1].set_title("Actual latency")
     axs[0,1].set(xlabel = "Time (s)" ,ylabel = "Latency (s)")
     axs[0,2].set_title("Average processing time")
     axs[0,2].set(xlabel = "Time (s)" ,ylabel = "Avg. Work Time (s)")
