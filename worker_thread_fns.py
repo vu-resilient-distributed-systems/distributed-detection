@@ -417,7 +417,15 @@ def receive_messages(hosts,
         
     # main receiving loop
     prev_time = time.time()
+    
+    ### Enable to create 60 second partition fault
+    partition = False
+    start_time = time.time()
+    
     while time.time() - prev_time < timeout:
+        if time.time() - start_time > 60:
+            partition = False
+            
         try:
             #topic = sock.recv_string(zmq.NOBLOCK)
             payload = sock.recv_pyobj(zmq.NOBLOCK)
@@ -429,7 +437,15 @@ def receive_messages(hosts,
             # deal with different types of messages (different label field)
             if label == "heartbeat":
                 # (time heartbeat generated, workers wait time, worker_num)
-                p_lb_queue.put(data)
+                if partition:
+                    if worker_num in [0,1]:
+                        if data[2] in [0,1]:
+                            p_lb_queue.put(data)
+                    elif worker_num in [2,3]:
+                        if data[2] in [2,3]:
+                            p_lb_queue.put(data)
+                else:
+                    p_lb_queue.put(data)
             
             # deal with audit requests
             elif label == "audit_request":
@@ -440,7 +456,15 @@ def receive_messages(hosts,
                     
             elif label == "query_request":
                 # data = (queried_im_id,worker_num,INTERNAL)
-                p_query_requests.put(data)
+                if partition:
+                    if worker_num in [0,1]:
+                        if data[1] in [0,1]:
+                            p_query_requests.put(data)
+                    elif worker_num in [2,3]:
+                        if data[1] in [2,3]:
+                            p_query_requests.put(data)
+                else:
+                    p_query_requests.put(data)
                 
             elif label == "query_result":
                 # data = (queried_data, query_im_id,destination_worker)
@@ -731,10 +755,11 @@ def work_function(p_image_queue,
                 dummy_work = True
                 if dummy_work:
                     result = np.ones([10,8])
+                    
                     if False: #### Enable for faulty worker
                         if worker_num == 2:
                             result = np.zeros([10,8])
-                        time.sleep(max((0,np.random.normal(worker_num+1,1)))) 
+                            
                     time.sleep(worker_num+2)
                 else:
                     result, _ = model.detect(image).data.numpy()

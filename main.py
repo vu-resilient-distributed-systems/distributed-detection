@@ -71,7 +71,7 @@ if __name__ == "__main__":
     num_workers = 4
     timeout = 15
     VERBOSE = False
-    target_latency = 7
+    target_latency = 15
     
     hosts = []
     ports = []
@@ -252,7 +252,20 @@ if __name__ == "__main__":
                 
                 if last_heartbeat_time + awt*2 +10 < time.time()-START_TIME:
                     anomalies[worker_num] += 3
-                
+        
+        ### Enable for massive worker death at t = 60
+        if False:
+            if time.time() > START_TIME +120 and time.time() < START_TIME + 125:
+                for i in range (len(anomalies)):
+                    anomalies[i] = 3
+                    
+        ### Enable for stochastic worker death
+        if False:
+            for i in range(len(anomalies)):
+                out = np.random.rand()
+                if out < 0.05:
+                    anomalies[i] = 3
+                    
         # 4. for any process, if 3 anomalies have been recorded, restart it
         for worker_num in range(len(anomalies)):
             

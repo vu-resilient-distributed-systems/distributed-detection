@@ -18,6 +18,8 @@ import argparse
 import _pickle as pickle
 import numpy as np
 
+from matplotlib import style
+import matplotlib.pyplot as plt
 
 def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts,worker_ports,VERBOSE = True):
     """ publishes a request for information on a given image at a random rate
@@ -31,18 +33,24 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
     worker_hosts - list of strings - IP addresses for each worker
     worker_ports - list of ints - port for each worker
     """
+    #for plotting
+    START_TIME = time.time()
+    x = []
+    y = []
+    y2 = []
     
     all_active_queries = []
     completed_queries = []
     all_im_ids = []
     next_time = time.time() + np.random.normal(1/rate,3)
-    
-    while True:
+    last_im_time = time.time()
+    while last_im_time + 20 > time.time() :
         try:
             # receive an im_id and add it to list of valid im ids
             temp = im_sub_socket.recv_pyobj(zmq.NOBLOCK)
             (name,im) = pickle.loads(temp)
             all_im_ids.append(name)
+            last_im_time = time.time()
         except zmq.ZMQError:
             pass
         
@@ -60,6 +68,7 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
                         if data[0] in all_active_queries:
                             all_active_queries.remove(data[0])
                             completed_queries.append(data[0])
+                            last_im_time = time.time()
                         
                     else:
                         print("No results yet for image {}.".format(data[0]))
@@ -71,7 +80,8 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
         if time.time() > next_time and len(all_im_ids) > 0:
             
             # get random im_id that hasn't already been queried
-            if len(all_active_queries) > 10:
+            if len(all_active_queries) > 30:
+                random.shuffle(all_active_queries)
                 im_id = all_active_queries[0]
             else:
                 im_id = -1
@@ -96,12 +106,24 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
             next_time = time.time() + np.random.normal(1/rate,3)
             
             print("{} active queries remaining.".format(len(all_active_queries)))
+            x.append(time.time()-START_TIME)
+            y.append(len(all_active_queries))
+            y2.append(len(completed_queries))
+            
             
     pub_socket.close()
     im_sub_socket.close()
     
+    style.use('fivethirtyeight')
+    plt.figure()
+    plt.stackplot(x,y,y2)
+    plt.xlabel("Time (s)")
+    plt.ylabel("Queries")
+    plt.title("Queries completed during trial.")
+    plt.legend(['Active queries','Completed queries'])
+    plt.show()
     
-    print ("w{}: Closed im receiver and query sender sockets.")
+    print ("Closed im receiver and query sender sockets.")
     
     
 if __name__ == '__main__':
