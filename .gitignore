@@ -1,3 +1,10 @@
 
 simple_yolo/yolov3.weights
 *.csv
+__pycache__/worker_process.cpython-36.pyc
+For Submission/VIDEO.txt
+__pycache__/worker_thread_fns.cpython-36.pyc
+For Submission/description of how to run.txt
+For Submission/github_url.txt
+For Submission/Final Report.docx
+For Submission/slides.pptx
