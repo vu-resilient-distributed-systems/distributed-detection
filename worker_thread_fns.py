@@ -229,7 +229,7 @@ def consistency_function(p_message_queue,
     p_consistency_results - thread-shared queue used to store results of internal
                             query requests
     p_last_balanced - shared mp Value - int - corresponds to last im id received and added to processing queue
-    p_continue_consistence - shared mp Value - bool - tells consistency function
+    p_continue_consistency - shared mp Value - bool - tells consistency function
                                 when to exit, otherwise would continue sending queries forever
     consistency rate - float - number of consistency queries to send per second
     query_timeout - float - how long to wait before using results to update database
@@ -574,6 +574,20 @@ def load_balance(p_new_image_id_queue,
     current estimated wait time to all other workers, waits for timeout, and 
     compares current estimated wait times to those of all workers received after
     the message was sent. Adds image to task list if worker has min wait time
+    p_new_image_id_queue - shared queue of ints which are image IDs of active images
+    p_task_buffer - shared queue to which image IDs are appended to indicate
+                    this worker should process that image
+    p_lb_results - shared queue to which estimated wait times for other processes are written
+    p_message_queue - shared queue for messages to send to other workers
+    p_average_time - shared multiprocessing float with lock , average processing time
+    p_num_tasks - shared multiprocessing int with lock, number of tasks in task and audit buffer
+    p_last_balanced - shared multiprocessing int with lock, last balanced image so work process doesn't get ahead
+    audit_rate - shared mp float with lock among all worker processes
+    timeout - float
+    lb_timeout - float, controls how old of est. wait time values can be used for load balancing
+    VERBOSE - bool
+    num_workers - int
+    worker_num -int
     """
     prev_time = time.time()
     all_received_times = {}
@@ -590,7 +604,7 @@ def load_balance(p_new_image_id_queue,
                 try: 
                     # (time heartbeat generated, workers wait time, worker_num)
                     message = p_lb_results.get(timeout = 0)
-                    # if message is more recent than previously stored
+                    # update wait time if message is more recent than previously stored
                     # will throw error if there is no entry for that worker num yet
                     try:
                         if message[0] > all_received_times[message[2]][0]:
@@ -658,7 +672,7 @@ def load_balance(p_new_image_id_queue,
                     p_message_queue.put(message)
                     if VERBOSE: print("w{}: LB requested audit of image {} from {}".format(worker_num, im_id,auditors))
             
-            # get average time
+            # update last balanced im ID
             with p_last_balanced.get_lock():
                 p_last_balanced.value = im_id    
                 
@@ -686,11 +700,25 @@ def work_function(p_image_queue,
     -Repeatedly gets first image from image_queue. If in audit_buffer or task_buffer,
     processes image. Otherwise, discards image and loads next.
     -Processing an image consists of performing object detection on the image and
-    outputting the results (numpy array)
+    outputting the results (numpy array) or alternatively doing dummy work
     -If task, the results are written to a local data file, and processing speed, latency, and average processing speed are reported to monitor process
     -If audit, full results are sent to monitor process and are not written to file
-
+    
+    p_image_queue - thread shared queue of images received from image sender
+    p_task_buffer - shared queue to which image IDs are appended to indicate
+                    this worker should process that image
+    p_audit_buffer - shared queue to which image IDs are appended to indicate
+                    this worker should process that image as an audit
+    p_message_queue - shared queue for messages to send to other workers
+    p_average_time - shared multiprocessing float with lock , average processing time
+    p_num_tasks - shared multiprocessing int with lock, number of tasks in task and audit buffer
+    p_last_balanced - shared multiprocessing int with lock, last balanced image so work process doesn't get ahead
+    p_database_lock - shared mp Lock used to control access to database
+    VERBOSE - bool
+    timeout - float
+    worker_num - int
     """ 
+    # specify whether to do dummy or real work
     dummy_work = True
     
     # create network for doing work
@@ -750,17 +778,11 @@ def work_function(p_image_queue,
                 AUDIT = True
                 audit_list.remove(im_id)
                 
-            if AUDIT or TASK:
-                #if VERBOSE: print("w{} work began processing image {}.".format(worker_num, im_id))
-                
+            if AUDIT or TASK:                
                 ############## DO WORK ############## 
                 work_start_time = time.time()
                 if dummy_work:
                     result = np.ones([10,8])
-                    
-                    if False: #### Enable for faulty worker
-                        if worker_num == 2:
-                            result = np.zeros([10,8])
                             
                     time.sleep(worker_num+2)
                 else:
@@ -769,6 +791,9 @@ def work_function(p_image_queue,
                     if result.shape[1] != 8:
                         result = np.zeros([1,8]) -1
 
+                if False: #### Enable for faulty worker
+                        if worker_num == 2:
+                            result = np.zeros([10,8])
                     
                 work_end_time = time.time()
                 prev_time = time.time()
@@ -811,9 +836,16 @@ def work_function(p_image_queue,
     print("w{}: Work thread exited. {} images processed".format(worker_num,count))
 
     
+############################ Utility functions ################################
+    
 def write_data_csv(file,data,im_id,lock,num_validators=1):
     """
     Writes data in csv for, appending to file and labeling each row with im_id
+    file - string - file path
+    data - numpy array to be appended to csv
+    im_id - int
+    num_validators - int
+    lock - mp lock used to control access to database file
     """
     lock.acquire()
     with open(file, mode = 'a') as f:
@@ -826,6 +858,12 @@ def write_data_csv(file,data,im_id,lock,num_validators=1):
     lock.release()
      
 def get_im_data(file,im_id,lock):
+    """
+    Loads data pertinent to im_id from file, or returns (None, 0) if no data is available
+    file - string - file path
+    im_id - int
+    lock - mp lock used to control access to database file
+    """
     try:
         lock.acquire()
         data = np.genfromtxt(str(file),delimiter = ',')
@@ -847,7 +885,12 @@ def get_im_data(file,im_id,lock):
     
 def update_data(file,num_validators, updated_data,lock):
     """
-    Given one N x 10 arrray, replaces
+    Given one N x 10 arrray, replaces old data (with the same im_id) with the new
+    data and updates the number of validating workers
+    file - string - file path
+    num_validators - int 
+    updated data - N x 10 numpy array
+    lock - mp lock for database file
     """
     lock.acquire()
     data = np.genfromtxt(file,delimiter = ',')

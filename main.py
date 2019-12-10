@@ -3,7 +3,9 @@
 Created on Wed Nov  6 18:48:14 2019
 @author: Derek Gloudemans
 
-This file contains the function that creates a worker process
+This file starts all worker processes and implements the system monitor process 
+for the decentralized stream processing system. By default , 4 workers are used
+and the target latency is 15 seconds
 """
 import threading
 import multiprocessing as mp
@@ -22,14 +24,20 @@ import matplotlib
 from worker_process import worker as worker_fn
 
 def monitor_receiver(hosts,
-                             ports,
-                             monitor_message_queue,
-                             timeout = 20, 
-                             VERBOSE = False):
+                     ports,
+                     monitor_message_queue,
+                     timeout = 20, 
+                     VERBOSE = False):
     """
-    NEED COMMENTS HERE
+    Receives output messages sent by all worker process and appends them to a mesage queue
+    hosts - list of strings corresponding to worker IP addresses
+    ports - list of ints corresponding to worker port numbers
+    monitor_message_queue - thread-shared queue to which messages are appended
+    timeout - float
+    VERBOSE - bool
     """  
-    # open publisher socket
+    
+    # open subscriber socket
     context = zmq.Context()
     sock = context.socket(zmq.SUB)
     for i in range(len(ports)):
@@ -42,20 +50,21 @@ def monitor_receiver(hosts,
     prev_time = time.time()
     while time.time() - prev_time < timeout:
         try:
-            #topic = sock.recv_string(zmq.NOBLOCK)
             payload = sock.recv_pyobj(zmq.NOBLOCK)
             prev_time = time.time()
             if VERBOSE: print("Monitor process received message at {}".format(time.ctime(prev_time)))
             
             # add (topic,data) to message queue
             message = pickle.loads(payload)
-            if message[0] in ["heartbeat","audit_result", "task_result"]:
+            if message[0] in ["heartbeat","audit_result", "task_result", "shutdown"]:
                 monitor_message_queue.put(message)
         
+        # no messages to receive
         except zmq.ZMQError:
             time.sleep(0.01)
             pass
-        
+      
+    # close down socket
     sock.close()
     context.term()
     print ("Monitor process closed receiver socket.")
@@ -73,6 +82,7 @@ if __name__ == "__main__":
     VERBOSE = False
     target_latency = 15
     
+    # define ports systematically
     hosts = []
     ports = []
     audit_rate = mp.Value('f',0.1,lock = True)
@@ -81,7 +91,7 @@ if __name__ == "__main__":
         ports.append(5200+i)
     
     
-    # define queue for storing results grabbed by monitor_receiver thread
+    # define queue for storing messages and start monitor_receiver thread
     monitor_message_queue = queue.Queue()
     t_receiver = threading.Thread(target = monitor_receiver, args = 
                                  (hosts,
@@ -109,6 +119,8 @@ if __name__ == "__main__":
             performance[i][metric] = {
                     "data":[],
                     "time":[]}
+            
+    # define a few other structures for storing relevant data
     audits = {}
     online = np.zeros(num_workers).astype(int)
     restarts = np.zeros(num_workers).astype(int)
@@ -141,28 +153,29 @@ if __name__ == "__main__":
     plt.pause(0.0001)
     
     
-        # main loop, in which processes will be monitored and restarted as necessary
-    time.sleep(10) # to allow at least one process to return a result
-    prev_time = time.time()
-    prev_latency_time = prev_time
-    prev_latency = 0
-    START_TIME = time.time()
+    # main loop, in which processes will be monitored and restarted as necessary
+    time.sleep(10) # to allow at least one process to return a result before plotting
+    prev_time = time.time() # updated whenever a message is parsed
+    prev_latency_time = prev_time # updated whenever the audit rate is adjusted
+    prev_latency = 0 # for storing latency for comparison
+    START_TIME = time.time() # for subtracting from stored times
     
-    
+    # while still receiving messages from workers
     while time.time() < prev_time + timeout:
 
-        
         # 1. If there are any messages in the monitor_message_queue, parse 
         while True:
             try: 
                 (label, payload) = monitor_message_queue.get(timeout = 0)
                 prev_time = time.time()
                 
+                # store heartbeat info
                 if label == "heartbeat": #(time gen, wait time, worker_num)
                     worker = payload[2]
                     performance[worker]["wait_time"]["data"].append(payload[1])
                     performance[worker]["wait_time"]["time"].append(payload[0]-START_TIME)
                     
+                # store audit results as a hash
                 elif label == "audit_result": # (worker_num,im_id,result))
                     im = payload[1]
                     worker = payload[0]
@@ -172,7 +185,7 @@ if __name__ == "__main__":
                         audits[im] = {
                                 worker:hash(payload[2].tostring())
                                 }
-                        
+                # store metrics from task results as well as results hash for auditing
                 elif label == "task_result": # (worker_num,im_id, work_time,avg_time,latency,result,time) 
                     worker = payload[0]
                     im = payload[1]
@@ -201,6 +214,7 @@ if __name__ == "__main__":
                                 worker:hash(payload[5].tostring())
                                 }  
                         
+                # note that worker is offline        
                 elif label == "shutdown": # (worker_num, time)
                     worker = payload[0]
                     online[worker] = 0
@@ -212,11 +226,13 @@ if __name__ == "__main__":
         # 2. Deal with audit results
         deletions = []
         for im in audits:
+            # if 3 results have been obtained for an image
             if len(audits[im]) == 3:
                 deletions.append(im)
                 all_hashes = []
                 for worker in audits[im]:
                     all_hashes.append(audits[im][worker])
+                
                 # get most common hash
                 hash_dict = {}
                 for hash_val in all_hashes:
@@ -233,6 +249,7 @@ if __name__ == "__main__":
                     if hash_dict[hash_val] > count:
                         count = hash_dict[hash_val]
                         most_common_hash = hash_val
+               
                 # record anomalous results
                 for worker_num in audits[im]:
                     if audits[im][worker_num] != most_common_hash:
@@ -293,25 +310,28 @@ if __name__ == "__main__":
             avg_latency = avg_latency / sum(online)
             prev_latency = avg_latency
         else:
-            avg_latency = prev_latency
+            # in the case when no workers are online, don't want a divide by zero error
+            avg_latency = prev_latency 
             
         # adjust audit ratio to reach target_latency every 5 seconds
         if time.time() > prev_latency_time + 5: # print every 5 seconds
             prev_latency_time = time.time()
             if avg_latency > target_latency:
+                # bump audit rate down
                 with audit_rate.get_lock():
                     audit_rate.value = max(audit_rate.value * 0.95,0.01)
                     audit_val = audit_rate.value
                     all_audit_rates.append(audit_val)
                     all_audit_rate_times.append(time.time()-START_TIME)
             else:
+                # bump audit rate up
                 with audit_rate.get_lock():
                     audit_rate.value = min(audit_rate.value * 1.05,1)
                     audit_val = audit_rate.value
                     all_audit_rates.append(audit_val)
                     all_audit_rate_times.append(time.time()-START_TIME)
     
-            # 6. Plot performance metrics
+            # 6. Output performance metrics
             print("================= Monitor Summary ==================")
             for i in range(0,len(online)):
                 status =  "Online" if online[i] else "Offline"

@@ -21,6 +21,14 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False,OVER
     Given a list of hosts and ports (one pair for each worker) and an id num,
     creates a series of threads and shared variables that carry out the work in
     a decentralized manner
+    
+    hosts - list of strings corresponding to host ip addresses of all workers
+    ports - list of ints corresponding to ports of all workers
+    worker_num - int - this worker's number
+    timeout - float - indicates how long threads should persist without new input 
+                        before terminating
+    VERBOSE - bool
+    OVERWRITE - bool - indicates whether entire database file should be overwritten 
     """
     
     # define shared variables
@@ -116,7 +124,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False,OVER
                                      True,
                                      len(ports)+1, # total num workers
                                      worker_num))
-    
+    # create heartbeat thread
     t_heartbeat = threading.Thread(target = heartbeat, args =
                                    (p_average_time,
                                     p_message_queue,
@@ -126,7 +134,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False,OVER
                                     timeout,
                                     VERBOSE,
                                     worker_num))
-    
+    # create work thread
     t_work = threading.Thread(target = work_function, args = 
                               (p_image_queue,
                               p_task_buffer,
@@ -140,6 +148,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False,OVER
                               True,
                               worker_num))
     
+    # create query handling thread
     t_query = threading.Thread(target = query_handler, args = 
                                (host,
                                 qr_port,
@@ -152,6 +161,7 @@ def worker(hosts,ports,audit_rate,worker_num, timeout = 20, VERBOSE = False,OVER
                                 VERBOSE,
                                 worker_num))
     
+    # create consistency thread
     t_consistency = threading.Thread(target = consistency_function, args = 
                                      (p_message_queue,
                                      p_consistency_results,

@@ -22,7 +22,10 @@ from matplotlib import style
 import matplotlib.pyplot as plt
 
 def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts,worker_ports,VERBOSE = True):
-    """ publishes a request for information on a given image at a random rate
+    """ publishes a request for information on a given image at a random rate. Each
+    request is randomly sent to one worker. At the end, plots the active and completed
+    queries over the time of the trial
+    
     rate - float -  average rate of queries (0.5) = 0.5 queries per second
     socket - socket to publish queries on 
     
@@ -39,7 +42,7 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
     y = []
     y2 = []
     
-    all_active_queries = []
+    all_active_queries = [] 
     completed_queries = []
     all_im_ids = []
     next_time = time.time() + np.random.normal(1/rate,3)
@@ -47,6 +50,7 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
     last_im_time = time.time()
     last_active_time = time.time()
     
+    # time out when queries are no longer being answered
     while last_active_time + 20 > time.time() :
         try:
             # receive an im_id and add it to list of valid im ids
@@ -82,7 +86,7 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
         # send a new query if sufficient time has passed
         if time.time() > next_time and len(all_im_ids) > 0 :
             
-            # repeate active queries
+            # repeat an active query
             if len(all_active_queries) > 0:
                 random.shuffle(all_active_queries)
                 repeat_im_id = all_active_queries[0]
@@ -96,6 +100,7 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
             if last_im_time + 10 > time.time():
                 im_id = -1
                 tries = 0
+                # randomly try to obtain an image ID that hasn't yet been queried
                 while tries < 5 and (im_id == -1 or im_id in all_active_queries or im_id in completed_queries):
                     random.shuffle(all_im_ids)
                     im_id = all_im_ids[0]
@@ -116,15 +121,17 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
                 print("Sent query request: " + message)
             next_time = time.time() + np.random.normal(1/rate,3)
             
+            # append results 
             print("{} active queries remaining.".format(len(all_active_queries)))
             x.append(time.time()-START_TIME)
             y.append(len(all_active_queries))
             y2.append(len(completed_queries))
             
-            
+    # close sockets        
     pub_socket.close()
     im_sub_socket.close()
     
+    # finally, plot results
     style.use('fivethirtyeight')
     plt.figure()
     plt.stackplot(x,y,y2)
