@@ -99,6 +99,7 @@ def publish_queries(rate,pub_socket,im_sub_socket,output_sub_socket,worker_hosts
                 while tries < 5 and (im_id == -1 or im_id in all_active_queries or im_id in completed_queries):
                     random.shuffle(all_im_ids)
                     im_id = all_im_ids[0]
+                    all_im_ids.remove(im_id)
                     tries += 1
                 all_active_queries.append(im_id)
             
