@@ -691,14 +691,16 @@ def work_function(p_image_queue,
     -If audit, full results are sent to monitor process and are not written to file
 
     """ 
+    dummy_work = True
     
     # create network for doing work
-    model = Darknet_Detector(worker_num,
-                             'simple_yolo/cfg/yolov3.cfg',
-                                'simple_yolo/yolov3.weights',
-                                'simple_yolo/data/coco.names',
-    
-                            'simple_yolo/pallete')
+    if not dummy_work:
+        model = Darknet_Detector(worker_num,
+                                 'simple_yolo/cfg/yolov3.cfg',
+                                    'simple_yolo/yolov3.weights',
+                                    'simple_yolo/data/coco.names',
+        
+                                'simple_yolo/pallete')
     audit_list = [] # will store all im_ids taken from p_audit_buffer
     task_list = [] # will store all im_ids taken from p_task_buffer
     
@@ -753,7 +755,6 @@ def work_function(p_image_queue,
                 
                 ############## DO WORK ############## 
                 work_start_time = time.time()
-                dummy_work = False
                 if dummy_work:
                     result = np.ones([10,8])
                     
