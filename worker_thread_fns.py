@@ -693,7 +693,8 @@ def work_function(p_image_queue,
     """ 
     
     # create network for doing work
-    model = Darknet_Detector('simple_yolo/cfg/yolov3.cfg',
+    model = Darknet_Detector(worker_num,
+                             'simple_yolo/cfg/yolov3.cfg',
                                 'simple_yolo/yolov3.weights',
                                 'simple_yolo/data/coco.names',
     
@@ -752,7 +753,7 @@ def work_function(p_image_queue,
                 
                 ############## DO WORK ############## 
                 work_start_time = time.time()
-                dummy_work = True
+                dummy_work = False
                 if dummy_work:
                     result = np.ones([10,8])
                     
@@ -762,8 +763,12 @@ def work_function(p_image_queue,
                             
                     time.sleep(worker_num+2)
                 else:
-                    result, _ = model.detect(image).data.numpy()
-                
+                    result = model.detect(image)[0].data.cpu().numpy()
+                    # deal with no detections case
+                    if result.shape[1] != 8:
+                        result = np.zeros([1,8]) -1
+
+                    
                 work_end_time = time.time()
                 prev_time = time.time()
                 
