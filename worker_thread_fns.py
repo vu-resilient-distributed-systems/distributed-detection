@@ -330,9 +330,9 @@ def consistency_function(p_message_queue,
             for tag in timed_out:
                 del active_queries[tag]
                 
-            # determine whether to continue using shared variable with heartbeat thread
-            with p_continue_consistency.get_lock():
-                continue_val = p_continue_consistency.value
+        # determine whether to continue using shared variable with heartbeat thread
+        with p_continue_consistency.get_lock():
+            continue_val = p_continue_consistency.value
             
     print("{}: Consistency thread exited.".format(worker_num))
     
