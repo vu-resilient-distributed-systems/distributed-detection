@@ -19,7 +19,7 @@ except:
     from simple_yolo.util import load_classes, write_results
 
 class Darknet_Detector():
-    def __init__(self, cfg_file,wt_file,class_file,pallete_file, nms_threshold = .3 , conf = 0.7, resolution=1024, num_classes=80, nms_classwise= True):
+    def __init__(self, id_num, cfg_file,wt_file,class_file,pallete_file, nms_threshold = .3 , conf = 0.7, resolution=1024, num_classes=80, nms_classwise= True):
         #Set up the neural network
         print("Loading network.....")
         self.model = Darknet(cfg_file)
@@ -31,7 +31,18 @@ class Darknet_Detector():
         self.nms_classwise = nms_classwise
         self.resolution = resolution # sets size of max dimension
         
-        self.CUDA = torch.cuda.is_available()
+        if id_num == 0:
+            self.CUDA = True
+            torch.cuda.set_device(0)
+            torch.cuda.empty_cache()
+            
+        elif id_num == 1:
+            self.CUDA = True
+            torch.cuda.set_device(1)
+            torch.cuda.empty_cache()
+        else:
+            self.CUDA = False
+            
         self.colors = pkl.load(open(pallete_file, "rb"))
         self.num_classes = num_classes
         self.classes = load_classes(class_file) 
@@ -148,7 +159,7 @@ if __name__ == "__main__":
     try:
         net2
     except:
-        net2 = Darknet_Detector('cfg/yolov3.cfg','yolov3.weights','data/coco.names','pallete')
+        net2 = Darknet_Detector(0,'cfg/yolov3.cfg','yolov3.weights','data/coco.names','pallete')
     
     test_file = 'imgs/img3.jpg'
     out, im = net2.detect(test_file, show = True)
